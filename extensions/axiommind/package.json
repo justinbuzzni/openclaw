@@ -1,0 +1,24 @@
+{
+  "name": "@openclaw/plugin-axiommind",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./index.ts",
+  "openclaw": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:web": "cd web && npm run build"
+  },
+  "dependencies": {
+    "duckdb": "^1.0.0",
+    "@anthropic-ai/sdk": "^0.30.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.1.26"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}

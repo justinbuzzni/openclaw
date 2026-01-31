@@ -1,0 +1,26 @@
+{
+  "id": "plugin-axiommind",
+  "name": "AxiomMind Memory System",
+  "description": "Memory Graduation Pipeline with Idris type verification + Custom Chat UI",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Enable AxiomMind memory pipeline"
+      },
+      "dataDir": {
+        "type": "string",
+        "description": "Data directory for AxiomMind storage"
+      },
+      "webPort": {
+        "type": "number",
+        "default": 8080,
+        "description": "Port for web UI (relative to gateway)"
+      }
+    }
+  }
+}
