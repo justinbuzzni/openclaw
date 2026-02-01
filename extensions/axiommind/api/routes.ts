@@ -6,6 +6,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { MemoryPipeline } from "../memory-pipeline/orchestrator.js";
 import type { EntryType, MemoryStage, DemotionReason } from "../memory-pipeline/types.js";
+import {
+  getAutoScheduler,
+  stopAutoScheduler,
+  type SchedulerStats,
+} from "../memory-pipeline/auto-scheduler.js";
 
 type HttpHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 
@@ -42,6 +47,10 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         if (apiPath === "conflicts") {
           return await handleGetConflicts(req, res, pipeline);
         }
+        // Scheduler API
+        if (apiPath === "scheduler/stats") {
+          return await handleSchedulerStats(req, res, pipeline);
+        }
       }
 
       if (req.method === "POST") {
@@ -61,6 +70,19 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         // Conflict API
         if (apiPath === "conflicts/resolve") {
           return await handleResolveConflict(req, res, pipeline);
+        }
+        // Scheduler API
+        if (apiPath === "scheduler/trigger-promotion") {
+          return await handleTriggerPromotion(req, res, pipeline);
+        }
+        if (apiPath === "scheduler/trigger-consolidation") {
+          return await handleTriggerConsolidation(req, res, pipeline);
+        }
+        if (apiPath === "scheduler/start") {
+          return await handleSchedulerStart(req, res, pipeline);
+        }
+        if (apiPath === "scheduler/stop") {
+          return await handleSchedulerStop(req, res, pipeline);
         }
       }
 
@@ -328,5 +350,80 @@ async function handleResolveConflict(
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ success: true }));
+  return true;
+}
+
+// === Scheduler API Handlers ===
+
+async function handleSchedulerStats(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const scheduler = getAutoScheduler(pipeline);
+  const stats = scheduler.getStats();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ stats }));
+  return true;
+}
+
+async function handleTriggerPromotion(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const scheduler = getAutoScheduler(pipeline);
+  const results = await scheduler.triggerPromotionCheck();
+
+  const successCount = results.filter((r) => r.success).length;
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({
+    total: results.length,
+    success: successCount,
+    failed: results.length - successCount,
+    results,
+  }));
+  return true;
+}
+
+async function handleTriggerConsolidation(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const scheduler = getAutoScheduler(pipeline);
+  const consolidatedCount = await scheduler.triggerConsolidation();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({
+    consolidated: consolidatedCount,
+  }));
+  return true;
+}
+
+async function handleSchedulerStart(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const scheduler = getAutoScheduler(pipeline);
+  scheduler.start();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ success: true, message: "Scheduler started" }));
+  return true;
+}
+
+async function handleSchedulerStop(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  stopAutoScheduler();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ success: true, message: "Scheduler stopped" }));
   return true;
 }

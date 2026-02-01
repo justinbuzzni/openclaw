@@ -2,6 +2,11 @@
  * AxiomMind - Memory Graduation Pipeline + Custom Chat UI
  *
  * OpenClaw 플러그인으로 통합되는 커스텀 메모리 시스템
+ *
+ * v2.0 - Intent-based Memory Retrieval
+ * - 매 메시지마다 메모리 검색 → 필요할 때만 검색
+ * - 세션 시작 시 메타데이터 프리로드
+ * - 세션 종료 시 자동 메모리 추출
  */
 import type { OpenClawPluginApi, AgentContext } from "openclaw/plugin-sdk";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -10,50 +15,17 @@ import { createSearchTool, createRecallTool, createSaveTool } from "./memory-pip
 import { createApiHandler } from "./api/routes.js";
 import { serveStaticWeb } from "./api/static.js";
 import { createAuthChecker } from "./api/auth.js";
-
-// 불용어 (검색에서 제외할 단어)
-const STOP_WORDS = new Set([
-  "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-  "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
-  "may", "might", "must", "shall", "can", "need", "dare", "ought", "used",
-  "to", "of", "in", "for", "on", "with", "at", "by", "from", "as", "into",
-  "through", "during", "before", "after", "above", "below", "between",
-  "and", "but", "or", "nor", "so", "yet", "both", "either", "neither",
-  "not", "only", "own", "same", "than", "too", "very", "just", "also",
-  "i", "me", "my", "myself", "we", "our", "ours", "ourselves",
-  "you", "your", "yours", "yourself", "yourselves",
-  "he", "him", "his", "himself", "she", "her", "hers", "herself",
-  "it", "its", "itself", "they", "them", "their", "theirs", "themselves",
-  "what", "which", "who", "whom", "this", "that", "these", "those",
-  "am", "been", "being", "here", "there", "when", "where", "why", "how",
-  "all", "any", "each", "few", "more", "most", "other", "some", "such",
-  "no", "none", "one", "every", "another", "many", "much", "several",
-  // 한국어 불용어
-  "이", "그", "저", "것", "수", "등", "들", "및", "에", "의", "를", "을",
-  "은", "는", "가", "이다", "있다", "하다", "되다", "않다", "없다",
-  "아", "어", "고", "니", "면", "서", "도", "만", "까지", "부터",
-  "에서", "으로", "로", "와", "과", "랑", "이랑", "하고",
-  "뭐", "뭘", "어떻게", "왜", "언제", "어디", "누구", "무엇",
-  "좀", "잘", "더", "덜", "많이", "조금", "매우", "아주", "정말", "진짜",
-  "해줘", "해주세요", "알려줘", "알려주세요", "말해줘", "말해주세요",
-]);
-
-/**
- * 사용자 메시지에서 검색 키워드 추출
- */
-function extractSearchKeywords(text: string): string[] {
-  if (!text) return [];
-
-  // 단어 분리 (영어/한국어 모두 처리)
-  const words = text
-    .toLowerCase()
-    .replace(/[^\w\s가-힣]/g, " ")
-    .split(/\s+/)
-    .filter((word) => word.length > 1 && !STOP_WORDS.has(word));
-
-  // 중복 제거 및 최대 5개 키워드 반환
-  return [...new Set(words)].slice(0, 5);
-}
+import {
+  MessageHandler,
+  generateLightMemoryContext,
+  generateConfirmationQuestions,
+} from "./memory-pipeline/message-handler.js";
+import { MemoryGraphManager } from "./memory-pipeline/memory-graph.js";
+import {
+  AutoPromotionScheduler,
+  getAutoScheduler,
+  stopAutoScheduler,
+} from "./memory-pipeline/auto-scheduler.js";
 
 const plugin = {
   id: "plugin-axiommind",
@@ -63,69 +35,134 @@ const plugin = {
   register(api: OpenClawPluginApi) {
     const logger = api.logger;
 
-    logger.info("Initializing AxiomMind plugin...");
+    logger.info("Initializing AxiomMind plugin v2.0...");
 
     // 1. Memory Pipeline 초기화
     const pipeline = new MemoryPipeline(api);
-    pipeline.initialize().catch((error) => {
-      logger.error(`Failed to initialize pipeline: ${error}`);
-    });
+    let messageHandler: MessageHandler;
+    let graphManager: MemoryGraphManager | null = null;
+    let autoScheduler: AutoPromotionScheduler | null = null;
 
-    // 2. 에이전트 시작 시 메모리 시스템 프롬프트 주입
-    api.on("before_agent_start", async (event: { prompt?: string }, _ctx: AgentContext) => {
-      // 사용자 메시지에서 키워드 추출 (검색용)
+    pipeline
+      .initialize()
+      .then(() => {
+        // MessageHandler 초기화
+        messageHandler = new MessageHandler(pipeline);
+
+        // GraphManager 초기화 (DB가 있으면)
+        const db = pipeline.indexer?.getDatabase?.();
+        if (db) {
+          graphManager = new MemoryGraphManager(db);
+          graphManager.initialize().catch((err) => {
+            logger.warn(`Graph initialization failed: ${err}`);
+          });
+          messageHandler.setGraphManager(graphManager);
+        }
+
+        // AutoPromotionScheduler 초기화 및 시작
+        autoScheduler = getAutoScheduler(pipeline, {
+          // 개발 환경에서는 짧은 주기로 테스트 가능
+          promotionCheckInterval: 60 * 60 * 1000, // 1시간
+          consolidationInterval: 6 * 60 * 60 * 1000, // 6시간
+          graphCleanupInterval: 24 * 60 * 60 * 1000, // 24시간
+          enabled: true,
+        });
+        autoScheduler.start();
+        logger.info("AutoPromotionScheduler started");
+
+        logger.info("AxiomMind pipeline initialized successfully");
+      })
+      .catch((error) => {
+        logger.error(`Failed to initialize pipeline: ${error}`);
+      });
+
+    // 플러그인 언로드 시 스케줄러 정리 (process 이벤트 사용)
+    const shutdownHandler = () => {
+      logger.info("Shutting down AxiomMind plugin...");
+      stopAutoScheduler();
+    };
+    process.on("SIGTERM", shutdownHandler);
+    process.on("SIGINT", shutdownHandler);
+
+    // 2. 에이전트 시작 시 - 세션 프리로드 + 경량 컨텍스트 주입
+    api.on("before_agent_start", async (event: { prompt?: string; sessionId?: string }, ctx: AgentContext) => {
+      if (!messageHandler) {
+        // 폴백: 기본 도구 안내만
+        return {
+          prependContext: generateLightMemoryContext(),
+        };
+      }
+
+      const sessionId = event.sessionId || ctx.sessionId || "default";
       const userPrompt = event.prompt || "";
-      const searchKeywords = extractSearchKeywords(userPrompt);
 
-      const memoryInstructions = `
-## AxiomMind Memory System
-
-You have access to a persistent memory system. **USE IT PROACTIVELY ON EVERY CONVERSATION.**
-
-### CRITICAL: Automatic Memory Search
-**BEFORE answering ANY question or responding to ANY message:**
-1. ALWAYS call \`axiom_search\` first to find relevant memories
-2. Search using keywords from the user's message: ${searchKeywords.length > 0 ? `"${searchKeywords.join('", "')}"` : "(extract from message)"}
-3. Use the retrieved context to provide personalized, informed responses
-4. Even for casual conversations, search for relevant user preferences or past context
-
-### Automatic Memory Save
-Save important information using \`axiom_save\` when the user shares:
-- Personal preferences, likes/dislikes, opinions
-- Decisions and their rationale
-- Facts about themselves, their work, projects, or interests
-- Tasks, commitments, or plans
-- Insights, learnings, or realizations
-- Corrections to previously stored information
-
-### Memory Tools:
-- \`axiom_search\`: Search memories (USE THIS FIRST on every interaction)
-- \`axiom_recall\`: Retrieve a specific session's memories
-- \`axiom_save\`: Save new memories
-
-**Remember: You have a memory. Use it. The user expects personalized responses based on what you know about them.**
-`;
-      return {
-        prependContext: memoryInstructions,
-      };
-    });
-
-    // 3. 세션 종료 시 자동 메모리 처리
-    api.on("session_end", async (event: { sessionId: string }, ctx: AgentContext) => {
       try {
-        logger.debug(`Processing session: ${event.sessionId}`);
-        await pipeline.processSessionFromContext(event.sessionId, ctx);
+        // Intent 기반 메모리 검색
+        const result = await messageHandler.handleMessage(userPrompt, {
+          messages: ctx.messages?.map((m) => ({
+            role: m.role,
+            content: typeof m.content === "string" ? m.content : "",
+          })),
+          sessionId,
+        });
+
+        // 로깅
+        if (result.action !== "skip") {
+          logger.debug(
+            `[AxiomMind] Intent: ${result.intent}, Score: ${result.score.total}, ` +
+              `Action: ${result.action}, CacheHit: ${result.cacheHit}, ` +
+              `Memories: ${result.memories.length}, Time: ${result.timing.total}ms`
+          );
+        }
+
+        // 확인 질문이 필요한 메모리가 있으면
+        const confirmQuestions = generateConfirmationQuestions(result.memories);
+        if (confirmQuestions.length > 0) {
+          // 첫 번째 확인 질문만 컨텍스트에 추가
+          const preloaded = messageHandler.getPreloadedContext(sessionId);
+          return {
+            prependContext: generateLightMemoryContext(preloaded, result.memories),
+            // 확인 질문을 assistant 응답에 포함하도록 힌트
+            systemNote: `Before answering, consider asking: "${confirmQuestions[0]}"`,
+          };
+        }
+
+        // 경량 컨텍스트 생성
+        const preloaded = messageHandler.getPreloadedContext(sessionId);
+        return {
+          prependContext: generateLightMemoryContext(preloaded, result.memories),
+        };
       } catch (error) {
-        logger.error(`Failed to process session: ${error}`);
+        logger.warn(`Memory retrieval failed: ${error}`);
+        return {
+          prependContext: generateLightMemoryContext(),
+        };
       }
     });
 
-    // 4. 메모리 도구 등록
+    // 4. 세션 종료 시 자동 메모리 처리 + 정리
+    api.on("session_end", async (event: { sessionId: string }, ctx: AgentContext) => {
+      try {
+        logger.debug(`Processing session end: ${event.sessionId}`);
+
+        // 세션 컨텍스트에서 메모리 추출 및 저장
+        await pipeline.processSessionFromContext(event.sessionId, ctx);
+
+        // MessageHandler 정리
+        if (messageHandler) {
+          await messageHandler.onSessionEnd(event.sessionId);
+        }
+      } catch (error) {
+        logger.error(`Failed to process session end: ${error}`);
+      }
+    });
+
+    // 5. 메모리 도구 등록 (명시적 요청 시에만 사용)
     api.registerTool(createSearchTool(pipeline), { names: ["axiom_search"] });
     api.registerTool(createRecallTool(pipeline), { names: ["axiom_recall"] });
     api.registerTool(createSaveTool(pipeline), { names: ["axiom_save"] });
 
-    // 5. HTTP 핸들러 등록 (인증 + prefix-based matching)
+    // 6. HTTP 핸들러 등록 (인증 + prefix-based matching)
     const checkAuth = createAuthChecker(api);
 
     api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse) => {
@@ -157,7 +194,7 @@ Save important information using \`axiom_save\` when the user shares:
       return await staticHandler(req, res);
     });
 
-    logger.info("AxiomMind plugin registered successfully");
+    logger.info("AxiomMind plugin v2.0 registered successfully");
   },
 };
 

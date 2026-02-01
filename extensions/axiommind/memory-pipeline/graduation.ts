@@ -228,7 +228,7 @@ export class GraduationManager {
         `
         SELECT
           COALESCE(memory_stage, 'working') as stage,
-          COUNT(*) as count
+          CAST(COUNT(*) AS INTEGER) as count
         FROM entries
         GROUP BY memory_stage
       `,
@@ -304,7 +304,7 @@ export class GraduationManager {
     return new Promise((resolve, reject) => {
       this.db.all(
         `
-        SELECT COUNT(*) as count FROM conflicts
+        SELECT CAST(COUNT(*) AS INTEGER) as count FROM conflicts
         WHERE (entry_id_1 = ? OR entry_id_2 = ?)
         AND resolved_at IS NULL
       `,
@@ -368,7 +368,7 @@ export class GraduationManager {
       this.db.run(
         `
         UPDATE conflicts
-        SET resolved_at = CURRENT_TIMESTAMP, resolution = ?
+        SET resolved_at = now(), resolution = ?
         WHERE id = ?
       `,
         resolution,
@@ -441,7 +441,7 @@ export class GraduationManager {
         `
         UPDATE entries
         SET memory_stage = ?,
-            promoted_at = CURRENT_TIMESTAMP,
+            promoted_at = now(),
             promotion_reason = ?
         WHERE id = ?
       `,
@@ -459,7 +459,7 @@ export class GraduationManager {
           this.db.run(
             `
             INSERT INTO promotion_history (id, entry_id, from_stage, to_stage, reason, promoted_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            VALUES (?, ?, ?, ?, ?, now())
           `,
             historyId,
             entryId,
@@ -517,7 +517,7 @@ export class GraduationManager {
         FROM entries
         WHERE COALESCE(memory_stage, 'working') = 'candidate'
         AND (
-          created_at < datetime('now', '-${daysAgo} days')
+          created_at < current_timestamp - interval '${daysAgo} days'
           OR COALESCE(confirmation_count, 0) >= ?
         )
       `,
@@ -547,7 +547,7 @@ export class GraduationManager {
         `
         SELECT e.id FROM entries e
         WHERE COALESCE(e.memory_stage, 'working') = 'verified'
-        AND e.created_at < datetime('now', '-${daysAgo} days')
+        AND e.created_at < current_timestamp - interval '${daysAgo} days'
         AND NOT EXISTS (
           SELECT 1 FROM conflicts c
           WHERE (c.entry_id_1 = e.id OR c.entry_id_2 = e.id)
@@ -575,7 +575,7 @@ export class GraduationManager {
         WHERE COALESCE(memory_stage, 'working') = 'certified'
         AND (
           last_accessed_at IS NULL
-          OR last_accessed_at < datetime('now', '-${daysAgo} days')
+          OR last_accessed_at < current_timestamp - interval '${daysAgo} days'
         )
       `,
         (err, rows) => {
@@ -597,7 +597,7 @@ export class GraduationManager {
       this.db.run(
         `
         UPDATE entries
-        SET last_accessed_at = CURRENT_TIMESTAMP,
+        SET last_accessed_at = now(),
             access_count = COALESCE(access_count, 0) + 1
         WHERE id = ?
       `,

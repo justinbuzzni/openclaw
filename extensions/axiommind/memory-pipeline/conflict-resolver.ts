@@ -186,7 +186,7 @@ export class ConflictResolver {
       this.db.run(
         `
         UPDATE conflicts
-        SET resolved_at = CURRENT_TIMESTAMP, resolution = ?
+        SET resolved_at = now(), resolution = ?
         WHERE id = ?
       `,
         resolution,

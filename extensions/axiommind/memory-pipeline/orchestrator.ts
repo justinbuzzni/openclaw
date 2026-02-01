@@ -59,7 +59,7 @@ export class MemoryPipeline extends EventEmitter {
   private extractor: SessionExtractor;
   private generator: IdrisGenerator;
   private validator: IdrisValidator;
-  private indexer: MemoryIndexer;
+  public indexer: MemoryIndexer;
   public search: MemorySearch;
   public graduation: GraduationManager | null = null;
   public conflictResolver: ConflictResolver | null = null;

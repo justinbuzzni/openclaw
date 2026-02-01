@@ -92,7 +92,7 @@ export class SimilarityChecker {
         `
         UPDATE entries
         SET confirmation_count = COALESCE(confirmation_count, 0) + 1,
-            last_accessed_at = CURRENT_TIMESTAMP
+            last_accessed_at = now()
         WHERE id = ?
       `,
         entryId,

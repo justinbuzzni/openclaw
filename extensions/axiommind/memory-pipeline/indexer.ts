@@ -49,7 +49,7 @@ export class MemoryIndexer {
           idr_path VARCHAR NOT NULL,
           compiled_at TIMESTAMP,
           compile_status VARCHAR DEFAULT 'pending',
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP DEFAULT now(),
           UNIQUE(date, session_id)
         );
 
@@ -68,7 +68,7 @@ export class MemoryIndexer {
           last_accessed_at TIMESTAMP,
           access_count INTEGER DEFAULT 0,
           confirmation_count INTEGER DEFAULT 0,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP DEFAULT now(),
           FOREIGN KEY (session_id) REFERENCES sessions(id)
         );
 
@@ -79,7 +79,7 @@ export class MemoryIndexer {
           from_stage VARCHAR NOT NULL,
           to_stage VARCHAR NOT NULL,
           reason VARCHAR,
-          promoted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          promoted_at TIMESTAMP DEFAULT now(),
           FOREIGN KEY (entry_id) REFERENCES entries(id)
         );
 
@@ -89,7 +89,7 @@ export class MemoryIndexer {
           entry_id_1 VARCHAR,
           entry_id_2 VARCHAR,
           conflict_type VARCHAR NOT NULL,
-          detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          detected_at TIMESTAMP DEFAULT now(),
           resolved_at TIMESTAMP,
           resolution VARCHAR,
           FOREIGN KEY (entry_id_1) REFERENCES entries(id),
@@ -147,13 +147,13 @@ export class MemoryIndexer {
       `
       INSERT INTO sessions
       (id, date, session_id, time_range, title, idr_path, compile_status, compiled_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      VALUES (?, ?, ?, ?, ?, ?, ?, now())
       ON CONFLICT (id) DO UPDATE SET
         time_range = EXCLUDED.time_range,
         title = EXCLUDED.title,
         idr_path = EXCLUDED.idr_path,
         compile_status = EXCLUDED.compile_status,
-        compiled_at = CURRENT_TIMESTAMP
+        compiled_at = now()
     `,
       [sessionId, data.date, data.sessionId, data.timeRange, data.title, idrPath, compileStatus]
     );
@@ -292,7 +292,7 @@ export class MemoryIndexer {
     if (!this.db) throw new Error("Database not initialized");
 
     const query = `
-      SELECT COALESCE(MAX(session_id), 0) + 1 as next_id
+      SELECT CAST(COALESCE(MAX(session_id), 0) + 1 AS INTEGER) as next_id
       FROM sessions WHERE date = ?
     `;
 
