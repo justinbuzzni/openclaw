@@ -40,6 +40,8 @@ export function serveStaticWeb(): HttpHandler {
     ? __dirname.replace("/dist/", "/")
     : __dirname;
   const staticDir = path.join(sourceDir, "..", "web", "out");
+  console.log("[axiommind/static] __dirname:", __dirname);
+  console.log("[axiommind/static] staticDir:", staticDir);
 
   return async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);

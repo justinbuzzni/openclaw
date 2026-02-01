@@ -22,7 +22,11 @@ export class MemorySearch {
       return [];
     }
 
-    const rows = await this.indexer.searchByKeyword(keywords, options.entryTypes);
+    const rows = await this.indexer.searchByKeyword(
+      keywords,
+      options.entryTypes,
+      options.memoryStages
+    );
 
     return rows.slice(0, options.limit || 10).map((row) => this.rowToSearchResult(row));
   }

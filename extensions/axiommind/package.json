@@ -2,9 +2,9 @@
   "name": "@openclaw/plugin-axiommind",
   "version": "0.1.0",
   "type": "module",
-  "main": "./index.ts",
+  "main": "./dist/index.js",
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./dist/index.js"]
   },
   "scripts": {
     "build": "tsc",

@@ -41,6 +41,9 @@ export function createSearchTool(pipeline: MemoryPipeline) {
       params: { query: string; entryTypes?: EntryType[]; limit?: number }
     ) {
       try {
+        // 검색 진행 상황 이벤트 발생
+        await pipeline.searchWithProgress(params.query, params.limit || 5, callId);
+
         const results = await pipeline.search.keywordSearch({
           query: params.query,
           entryTypes: params.entryTypes,
@@ -52,7 +55,11 @@ export function createSearchTool(pipeline: MemoryPipeline) {
             content: [
               {
                 type: "text" as const,
-                text: "검색 결과가 없습니다.",
+                text: JSON.stringify({
+                  query: params.query,
+                  results: [],
+                  count: 0,
+                }),
               },
             ],
           };
@@ -68,7 +75,17 @@ export function createSearchTool(pipeline: MemoryPipeline) {
           content: [
             {
               type: "text" as const,
-              text: `${results.length}개의 결과를 찾았습니다:\n\n${formatted}`,
+              text: JSON.stringify({
+                query: params.query,
+                results: results.map(r => ({
+                  type: r.entryType,
+                  title: r.title,
+                  date: r.date,
+                  sessionId: r.sessionId,
+                })),
+                count: results.length,
+                formatted,
+              }),
             },
           ],
         };
@@ -107,20 +124,26 @@ export function createRecallTool(pipeline: MemoryPipeline) {
     },
     async execute(callId: string, params: { sessionId: string }) {
       try {
-        const results = await pipeline.search.getSessionEntries(params.sessionId);
+        // 조회 진행 상황 이벤트 발생과 함께 결과 가져오기
+        const results = await pipeline.recallWithProgress(params.sessionId, callId);
 
         if (results.length === 0) {
           return {
             content: [
               {
                 type: "text" as const,
-                text: `세션 ${params.sessionId}을(를) 찾을 수 없습니다.`,
+                text: JSON.stringify({
+                  sessionId: params.sessionId,
+                  results: [],
+                  count: 0,
+                  message: `세션 ${params.sessionId}을(를) 찾을 수 없습니다.`,
+                }),
               },
             ],
           };
         }
 
-        const formatted = results
+        const formatted = (results as any[])
           .map((r, i) => {
             return `${i + 1}. [${r.entryType}] ${r.title}\n   ${JSON.stringify(r.content)}`;
           })
@@ -130,7 +153,15 @@ export function createRecallTool(pipeline: MemoryPipeline) {
           content: [
             {
               type: "text" as const,
-              text: `세션 ${params.sessionId}의 엔트리:\n\n${formatted}`,
+              text: JSON.stringify({
+                sessionId: params.sessionId,
+                results: (results as any[]).map(r => ({
+                  type: r.entryType,
+                  title: r.title,
+                })),
+                count: results.length,
+                formatted,
+              }),
             },
           ],
         };
@@ -182,13 +213,20 @@ export function createSaveTool(pipeline: MemoryPipeline) {
     ) {
       try {
         const entry = buildEntry(params.entryType, params.title, params.details || {});
-        const result = await pipeline.saveEntry(entry);
+        // 저장 진행 상황 이벤트와 함께 저장
+        const result = await pipeline.saveEntry(entry, undefined, callId);
 
         return {
           content: [
             {
               type: "text" as const,
-              text: `기억이 저장되었습니다.\n세션: ${result.sessionId}\n상태: ${result.compileStatus}`,
+              text: JSON.stringify({
+                success: true,
+                sessionId: result.sessionId,
+                compileStatus: result.compileStatus,
+                entriesCount: result.entriesCount,
+                message: `기억이 저장되었습니다.`,
+              }),
             },
           ],
         };

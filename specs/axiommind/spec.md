@@ -21,13 +21,16 @@ AxiomMind는 OpenClaw와 통합되는 커스텀 채팅 웹 UI + Memory Graduatio
 
 ### 2.1 웹 UI (Next.js 15)
 
-| 컴포넌트 | 설명 |
-|----------|------|
-| ChatWindow | 메인 채팅 인터페이스 |
-| MessageList | 메시지 목록 표시 |
-| MessageInput | 메시지 입력 |
-| MemoryPanel | 기억 검색/표시 패널 |
-| GraduationPipeline | L0-L4 단계 시각화 |
+| 컴포넌트 | 설명 | 상태 |
+|----------|------|------|
+| ChatWindow | 메인 채팅 인터페이스 | ✅ 완료 |
+| MessageList | 메시지 목록 표시 (마크다운, 도구 진행) | ✅ 완료 |
+| MessageInput | 메시지 입력 (스트리밍 중 비활성화) | ✅ 완료 |
+| MemoryPanel | 기억 검색/표시 패널 | ✅ 완료 |
+| MemoryOperationIndicator | 메모리 작업 시각화 | ✅ 완료 |
+| GraduationPipeline | L0-L4 단계 시각화 | ❌ 미구현 |
+| ThinkingModeToggle | 생각 모드 토글 | ❌ 미구현 |
+| FileAttachment | 파일 첨부 UI | ❌ 미구현 |
 
 #### 기술 스택
 
@@ -40,21 +43,26 @@ AxiomMind는 OpenClaw와 통합되는 커스텀 채팅 웹 UI + Memory Graduatio
 
 ### 2.2 Memory Pipeline
 
-| 컴포넌트 | 설명 |
-|----------|------|
-| SessionExtractor | 채팅 세션 → 구조화된 JSON 추출 (LLM) |
-| IdrisGenerator | JSON → Idris 코드 생성 |
-| IdrisValidator | Idris2 컴파일러로 타입 검증 |
-| MemoryIndexer | DuckDB + LanceDB 인덱싱 |
-| MemorySearch | 시맨틱 검색 + 키워드 검색 |
+| 컴포넌트 | 설명 | 상태 |
+|----------|------|------|
+| SessionExtractor | 채팅 세션 → 구조화된 JSON 추출 (LLM) | ✅ 완료 |
+| IdrisGenerator | JSON → Idris 코드 생성 | ✅ 완료 |
+| IdrisValidator | Idris2 컴파일러로 타입 검증 | ✅ 완료 |
+| MemoryIndexer | DuckDB + LanceDB 인덱싱 | ✅ 완료 |
+| MemorySearch | 시맨틱 검색 + 키워드 검색 | ✅ 완료 |
+| GraduationManager | L0→L4 승격/강등 관리 | ❌ 미구현 |
+| ConflictResolver | 메모리 충돌 감지 및 해결 | ❌ 미구현 |
 
 ### 2.3 OpenClaw 플러그인
 
-| 기능 | 설명 |
-|------|------|
-| 후크 | `session_end` - 세션 종료 시 자동 메모리 처리 |
-| 도구 | `axiom_search`, `axiom_recall`, `axiom_save` |
-| HTTP | `/axiommind/` - 웹 UI, `/axiommind/api/` - REST API |
+| 기능 | 설명 | 상태 |
+|------|------|------|
+| 후크 - before_agent_start | 메모리 프롬프트 자동 주입 | ✅ 완료 |
+| 후크 - session_end | 세션 종료 시 자동 메모리 처리 | ❌ 미구현 |
+| 도구 - axiom_search | 메모리 검색 | ✅ 완료 |
+| 도구 - axiom_recall | 특정 기억 불러오기 | ✅ 완료 |
+| 도구 - axiom_save | 수동 기억 저장 | ✅ 완료 |
+| HTTP | /ax/chat, /ax/api/* | ✅ 완료 |
 
 ---
 
@@ -65,7 +73,7 @@ AxiomMind는 OpenClaw와 통합되는 커스텀 채팅 웹 UI + Memory Graduatio
 ```typescript
 type Priority = 'low' | 'medium' | 'high' | 'critical';
 type TaskStatus = 'pending' | 'in_progress' | 'done' | 'blocked' | 'cancelled';
-type MemoryStage = 'raw' | 'candidate' | 'verified' | 'certified';
+type MemoryStage = 'raw' | 'working' | 'candidate' | 'verified' | 'certified';
 
 type Fact = {
   type: 'fact';
@@ -131,21 +139,44 @@ type MemoryDay = {
 
 ### 4.1 단계 정의
 
-| Level | 이름 | 특성 | 저장소 |
-|-------|------|------|--------|
-| L0 | RAW EVENT LOG | 불변, append-only | LanceDB |
-| L1 | WORKING MEMORY | 가변, 자유로움 | 메모리/임시 파일 |
-| L2 | CANDIDATE SPEC | 구조화, 불완전 허용 | Idris (hole 허용) |
-| L3 | VERIFIED SPEC | Idris 타입 체크 통과 | Idris (검증 완료) |
-| L4 | CERTIFIED SPEC | 공통 레이어, 준불변 | Idris + 버전 태깅 |
+| Level | 이름 | 특성 | 저장소 | 구현 상태 |
+|-------|------|------|--------|----------|
+| L0 | RAW EVENT LOG | 불변, append-only | LanceDB | ✅ 완료 |
+| L1 | WORKING MEMORY | 가변, 자유로움 | DuckDB (stage='working') | ✅ 완료 |
+| L2 | CANDIDATE SPEC | 구조화, Idris 타입 체크 통과 | DuckDB (stage='candidate') | ❌ 미구현 |
+| L3 | VERIFIED SPEC | 반복 확인 또는 시간 경과 | DuckDB (stage='verified') | ❌ 미구현 |
+| L4 | CERTIFIED SPEC | 장기 안정, 준불변 | DuckDB (stage='certified') | ❌ 미구현 |
 
-### 4.2 승격 조건
+### 4.2 승격 조건 (상세)
 
 ```
-L0 → L1: 자동 (세션 종료 시)
-L1 → L2: 패턴 감지 (반복/중요도/결정 영향)
-L2 → L3: 검증 게이트 (근거 충분 + 충돌 없음 + Idris 타입 체크)
-L3 → L4: 사용 빈도 + 범용성 충족
+L0 → L1 (Working):
+  - 자동 (세션 종료 시 LLM Extractor로 추출)
+  - 조건: 세션 로그 존재
+
+L1 → L2 (Candidate):
+  - Idris2 타입 체크 통과
+  - 조건: compile_status = 'success'
+  - 트리거: 자동 (파이프라인 완료 시)
+
+L2 → L3 (Verified):
+  - 조건 중 하나 충족:
+    a) 같은 정보가 3개 이상의 다른 세션에서 언급
+    b) 사용자가 UI에서 "확인" 버튼 클릭
+    c) 7일 경과 후 자동 승격
+  - 트리거: 스케줄러 (일일 1회) + 사용자 액션
+
+L3 → L4 (Certified):
+  - 조건 모두 충족:
+    a) 30일 이상 변경 없이 유지
+    b) 다른 Verified 메모리와 충돌 없음
+    c) 사용자가 "중요" 표시 (선택)
+  - 트리거: 스케줄러 (주간 1회)
+
+역방향 강등:
+  - L4 → L3: 90일 이상 미사용 시
+  - L3 → L2: 충돌 감지 시
+  - L2 → L1: 컴파일 실패 시
 ```
 
 ### 4.3 불변식 (Invariants)
@@ -160,6 +191,13 @@ validTask t = case t.status of
 -- Decision은 반드시 근거가 있어야 함
 validDecision : Decision -> Bool
 validDecision d = not (isNothing d.rationale)
+
+-- Verified 이상 레벨은 evidence 필수
+validVerifiedFact : Fact -> MemoryStage -> Bool
+validVerifiedFact f stage = case stage of
+  Verified => not (isNothing f.evidence)
+  Certified => not (isNothing f.evidence)
+  _ => True
 ```
 
 ---
@@ -168,7 +206,7 @@ validDecision d = not (isNothing d.rationale)
 
 ### 5.1 REST API
 
-#### GET /axiommind/api/search
+#### GET /ax/api/search
 
 시맨틱 검색
 
@@ -176,6 +214,7 @@ validDecision d = not (isNothing d.rationale)
 Query Parameters:
   q: string (required) - 검색 쿼리
   types?: string[] - 필터링할 entry 타입
+  stages?: string[] - 필터링할 memory stage (new)
   limit?: number (default: 10)
   dateFrom?: string
   dateTo?: string
@@ -189,31 +228,34 @@ Response:
     entryType: string,
     title: string,
     content: object,
+    stage: string,  // new
     score: number
   }]
 }
 ```
 
-#### GET /axiommind/api/decisions
+#### GET /ax/api/decisions
 
 Decision과 연결된 Fact 조회
 
 ```
 Query Parameters:
   dateFrom?: string
+  stages?: string[] - 필터링할 memory stage (new)
 
 Response:
 {
   decisions: [{
     decision: Decision,
     date: string,
+    stage: string,  // new
     evidenceFacts: Fact[],
     idrPath: string
   }]
 }
 ```
 
-#### GET /axiommind/api/tasks
+#### GET /ax/api/tasks
 
 미완료 Task 조회
 
@@ -223,12 +265,13 @@ Response:
   tasks: [{
     task: Task,
     date: string,
-    session: string
+    session: string,
+    stage: string  // new
   }]
 }
 ```
 
-#### POST /axiommind/api/process
+#### POST /ax/api/process
 
 수동 세션 처리
 
@@ -245,7 +288,51 @@ Response:
   sessionId: string,
   idrPath: string,
   compileStatus: 'success' | 'failed',
-  entriesCount: number
+  entriesCount: number,
+  stage: string  // new: 'working' | 'candidate'
+}
+```
+
+#### POST /ax/api/promote (NEW)
+
+메모리 수동 승격
+
+```
+Body:
+{
+  entryId: string,
+  targetStage: 'verified' | 'certified'
+}
+
+Response:
+{
+  success: boolean,
+  entryId: string,
+  newStage: string,
+  message?: string
+}
+```
+
+#### GET /ax/api/graduation/stats (NEW)
+
+단계별 메모리 통계
+
+```
+Response:
+{
+  stats: {
+    raw: number,
+    working: number,
+    candidate: number,
+    verified: number,
+    certified: number
+  },
+  recentPromotions: [{
+    entryId: string,
+    fromStage: string,
+    toStage: string,
+    promotedAt: string
+  }]
 }
 ```
 
@@ -267,6 +354,7 @@ OpenClaw Gateway WebSocket 프로토콜 사용:
   parameters: {
     query: string,        // 검색 쿼리
     entryTypes?: string[],// 필터링할 타입
+    stages?: string[],    // 필터링할 stage (new)
     limit?: number        // 결과 수 (기본: 5)
   }
 }
@@ -293,7 +381,8 @@ OpenClaw Gateway WebSocket 프로토콜 사용:
   description: "수동으로 기억 저장",
   parameters: {
     entry: AnyEntry,      // 저장할 엔트리
-    date?: string         // 날짜 (기본: 오늘)
+    date?: string,        // 날짜 (기본: 오늘)
+    stage?: string        // 시작 stage (기본: 'working')
   }
 }
 ```
@@ -319,7 +408,7 @@ OpenClaw Gateway WebSocket 프로토콜 사용:
         └── session_01.txt
 ```
 
-### 6.2 DuckDB 스키마
+### 6.2 DuckDB 스키마 (Updated)
 
 ```sql
 CREATE TABLE sessions (
@@ -342,8 +431,41 @@ CREATE TABLE entries (
   title VARCHAR NOT NULL,
   content JSONB,
   embedding_id VARCHAR,
+  -- NEW: Graduation Pipeline 지원
+  memory_stage VARCHAR DEFAULT 'working',  -- raw|working|candidate|verified|certified
+  promoted_at TIMESTAMP,
+  promotion_reason VARCHAR,
+  last_accessed_at TIMESTAMP,
+  access_count INTEGER DEFAULT 0,
+  confirmation_count INTEGER DEFAULT 0,  -- 다른 세션에서 언급된 횟수
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- NEW: 승격 이력 테이블
+CREATE TABLE promotion_history (
+  id VARCHAR PRIMARY KEY,
+  entry_id VARCHAR REFERENCES entries(id),
+  from_stage VARCHAR NOT NULL,
+  to_stage VARCHAR NOT NULL,
+  reason VARCHAR,
+  promoted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- NEW: 충돌 기록 테이블
+CREATE TABLE conflicts (
+  id VARCHAR PRIMARY KEY,
+  entry_id_1 VARCHAR REFERENCES entries(id),
+  entry_id_2 VARCHAR REFERENCES entries(id),
+  conflict_type VARCHAR NOT NULL,  -- contradiction|outdated|duplicate
+  detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  resolved_at TIMESTAMP,
+  resolution VARCHAR
+);
+
+CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
+CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);
+CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(memory_stage);  -- NEW
+CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
 ```
 
 ### 6.3 LanceDB 스키마
@@ -355,6 +477,7 @@ memory_entries:
   - date: string
   - type: string
   - text: string
+  - stage: string       # NEW
   - vector: float[768]  # intfloat/multilingual-e5-base
 ```
 
@@ -366,6 +489,7 @@ memory_entries:
 
 - 검색 응답: < 500ms
 - 세션 처리: < 30s (LLM 호출 포함)
+- 승격 처리: < 5s (단일 엔트리)
 - 웹 UI 초기 로드: < 2s
 
 ### 7.2 확장성
@@ -376,6 +500,72 @@ memory_entries:
 
 ### 7.3 의존성
 
-- Idris2 컴파일러 설치 필요
+- Idris2 컴파일러 설치 필요 (L1→L2 승격 시)
 - Node.js 22+
 - DuckDB, LanceDB (npm 패키지)
+
+---
+
+## 8. 채팅 UI 추가 기능 (NEW)
+
+### 8.1 Thinking Mode 지원
+
+```typescript
+type ThinkingMode = 'none' | 'low' | 'medium' | 'high';
+
+// 메시지 전송 시 thinking 모드 포함
+{
+  type: "req",
+  method: "chat.send",
+  params: {
+    sessionKey: string,
+    message: string,
+    thinking?: ThinkingMode,  // NEW
+    idempotencyKey: string
+  }
+}
+
+// 응답에서 thinking 블록 표시
+{
+  role: "assistant",
+  content: [
+    { type: "thinking", thinking: "..." },
+    { type: "text", text: "..." }
+  ]
+}
+```
+
+### 8.2 파일 첨부 지원
+
+```typescript
+type Attachment = {
+  type: 'file' | 'image';
+  name: string;
+  mimeType: string;
+  data: string;  // base64
+  size: number;
+};
+
+// 메시지 전송 시 첨부 포함
+{
+  type: "req",
+  method: "chat.send",
+  params: {
+    sessionKey: string,
+    message: string,
+    attachments?: Attachment[],  // NEW
+    idempotencyKey: string
+  }
+}
+```
+
+### 8.3 Memory Graduation 시각화
+
+```typescript
+// UI 컴포넌트: GraduationPipeline
+// 표시 내용:
+// - 각 단계별 메모리 개수
+// - 최근 승격/강등 이력
+// - 수동 승격 버튼 (L2→L3, L3→L4)
+// - 충돌 알림 배지
+```

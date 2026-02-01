@@ -28,6 +28,9 @@ export class MemoryIndexer {
 
     // 스키마 초기화
     await this.initSchema();
+
+    // 기존 DB 마이그레이션 (새 컬럼 추가)
+    await this.migrateSchema();
   }
 
   private async initSchema(): Promise<void> {
@@ -36,6 +39,7 @@ export class MemoryIndexer {
     return new Promise((resolve, reject) => {
       this.db!.run(
         `
+        -- Sessions 테이블
         CREATE TABLE IF NOT EXISTS sessions (
           id VARCHAR PRIMARY KEY,
           date DATE NOT NULL,
@@ -49,6 +53,7 @@ export class MemoryIndexer {
           UNIQUE(date, session_id)
         );
 
+        -- Entries 테이블 (Graduation Pipeline 지원)
         CREATE TABLE IF NOT EXISTS entries (
           id VARCHAR PRIMARY KEY,
           session_id VARCHAR,
@@ -56,13 +61,48 @@ export class MemoryIndexer {
           title VARCHAR NOT NULL,
           content JSON,
           text_for_search VARCHAR,
+          -- Graduation Pipeline 컬럼
+          memory_stage VARCHAR DEFAULT 'working',
+          promoted_at TIMESTAMP,
+          promotion_reason VARCHAR,
+          last_accessed_at TIMESTAMP,
+          access_count INTEGER DEFAULT 0,
+          confirmation_count INTEGER DEFAULT 0,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (session_id) REFERENCES sessions(id)
         );
 
+        -- 승격 이력 테이블
+        CREATE TABLE IF NOT EXISTS promotion_history (
+          id VARCHAR PRIMARY KEY,
+          entry_id VARCHAR,
+          from_stage VARCHAR NOT NULL,
+          to_stage VARCHAR NOT NULL,
+          reason VARCHAR,
+          promoted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (entry_id) REFERENCES entries(id)
+        );
+
+        -- 충돌 기록 테이블
+        CREATE TABLE IF NOT EXISTS conflicts (
+          id VARCHAR PRIMARY KEY,
+          entry_id_1 VARCHAR,
+          entry_id_2 VARCHAR,
+          conflict_type VARCHAR NOT NULL,
+          detected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          resolved_at TIMESTAMP,
+          resolution VARCHAR,
+          FOREIGN KEY (entry_id_1) REFERENCES entries(id),
+          FOREIGN KEY (entry_id_2) REFERENCES entries(id)
+        );
+
+        -- 인덱스
         CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
         CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);
+        CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(memory_stage);
         CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
+        CREATE INDEX IF NOT EXISTS idx_promotion_history_entry ON promotion_history(entry_id);
+        CREATE INDEX IF NOT EXISTS idx_conflicts_entries ON conflicts(entry_id_1, entry_id_2);
       `,
         (err) => {
           if (err) reject(err);
@@ -70,6 +110,31 @@ export class MemoryIndexer {
         }
       );
     });
+  }
+
+  /**
+   * 기존 DB 마이그레이션 (memory_stage 컬럼 추가)
+   */
+  async migrateSchema(): Promise<void> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    // 기존 entries 테이블에 새 컬럼이 없으면 추가
+    const columns = [
+      { name: "memory_stage", type: "VARCHAR DEFAULT 'working'" },
+      { name: "promoted_at", type: "TIMESTAMP" },
+      { name: "promotion_reason", type: "VARCHAR" },
+      { name: "last_accessed_at", type: "TIMESTAMP" },
+      { name: "access_count", type: "INTEGER DEFAULT 0" },
+      { name: "confirmation_count", type: "INTEGER DEFAULT 0" },
+    ];
+
+    for (const col of columns) {
+      try {
+        await this.runQuery(`ALTER TABLE entries ADD COLUMN ${col.name} ${col.type}`);
+      } catch {
+        // 컬럼이 이미 존재하면 무시
+      }
+    }
   }
 
   async indexSession(data: Session, idrPath: string, compileStatus: CompileStatus): Promise<void> {
@@ -80,9 +145,15 @@ export class MemoryIndexer {
     // 1. 세션 메타데이터 저장
     await this.runQuery(
       `
-      INSERT OR REPLACE INTO sessions
+      INSERT INTO sessions
       (id, date, session_id, time_range, title, idr_path, compile_status, compiled_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT (id) DO UPDATE SET
+        time_range = EXCLUDED.time_range,
+        title = EXCLUDED.title,
+        idr_path = EXCLUDED.idr_path,
+        compile_status = EXCLUDED.compile_status,
+        compiled_at = CURRENT_TIMESTAMP
     `,
       [sessionId, data.date, data.sessionId, data.timeRange, data.title, idrPath, compileStatus]
     );
@@ -96,22 +167,34 @@ export class MemoryIndexer {
 
       await this.runQuery(
         `
-        INSERT OR REPLACE INTO entries
+        INSERT INTO entries
         (id, session_id, entry_type, title, content, text_for_search)
         VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+          session_id = EXCLUDED.session_id,
+          entry_type = EXCLUDED.entry_type,
+          title = EXCLUDED.title,
+          content = EXCLUDED.content,
+          text_for_search = EXCLUDED.text_for_search
       `,
         [entryId, sessionId, entry.type, title, JSON.stringify(entry), textForSearch]
       );
     }
   }
 
-  async searchByKeyword(keywords: string[], entryTypes?: string[]): Promise<SearchRowResult[]> {
+  async searchByKeyword(keywords: string[], entryTypes?: string[], memoryStages?: string[]): Promise<SearchRowResult[]> {
     if (!this.db) throw new Error("Database not initialized");
 
     let typeFilter = "";
     if (entryTypes && entryTypes.length > 0) {
       const types = entryTypes.map((t) => `'${t}'`).join(", ");
       typeFilter = `AND e.entry_type IN (${types})`;
+    }
+
+    let stageFilter = "";
+    if (memoryStages && memoryStages.length > 0) {
+      const stages = memoryStages.map((s) => `'${s}'`).join(", ");
+      stageFilter = `AND COALESCE(e.memory_stage, 'working') IN (${stages})`;
     }
 
     const keywordConditions = keywords
@@ -124,6 +207,7 @@ export class MemoryIndexer {
       JOIN sessions s ON e.session_id = s.id
       WHERE (${keywordConditions})
       ${typeFilter}
+      ${stageFilter}
       ORDER BY s.date DESC, e.id
       LIMIT 20
     `;
@@ -213,7 +297,8 @@ export class MemoryIndexer {
     `;
 
     const rows = await this.runSelect(query, [date]);
-    return rows[0]?.next_id || 1;
+    const nextId = rows[0]?.next_id;
+    return typeof nextId === "number" ? nextId : 1;
   }
 
   private entryToText(entry: AnyEntry): string {
@@ -275,6 +360,13 @@ export class MemoryIndexer {
         });
       });
     }
+  }
+
+  /**
+   * DB 인스턴스 반환 (GraduationManager 등과 공유)
+   */
+  getDatabase(): duckdb.Database | null {
+    return this.db;
   }
 }
 

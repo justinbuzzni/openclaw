@@ -64,3 +64,7 @@ export function useDecisions(dateFrom?: string) {
 export function usePendingTasks() {
   return useQuery(memoryQueries.tasks);
 }
+
+export function useGraduationStats() {
+  return useQuery(memoryQueries.graduationStats);
+}

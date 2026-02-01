@@ -6,6 +6,8 @@ export type Message = {
   content: string | ContentBlock[];
   timestamp: Date;
   isStreaming?: boolean;
+  thinkingContent?: string;
+  isThinkingStreaming?: boolean;
 };
 
 export type ContentBlock = {
@@ -29,6 +31,41 @@ export type ToolProgress = {
   status: "running" | "done" | "error";
   input?: unknown;
   output?: unknown;
+};
+
+// 메모리 작업 타입
+export type MemoryOperationType = "save" | "recall" | "search";
+export type MemoryOperationPhase =
+  | "extracting"      // 세션에서 정보 추출 중
+  | "generating"      // Idris 코드 생성 중
+  | "validating"      // 타입 검증 중
+  | "indexing"        // 검색 인덱스 저장 중
+  | "searching"       // 메모리 검색 중
+  | "retrieving"      // 결과 조회 중
+  | "complete"        // 완료
+  | "error";          // 오류
+
+export type MemoryOperation = {
+  id: string;
+  type: MemoryOperationType;
+  phase: MemoryOperationPhase;
+  query?: string;           // 검색/조회 쿼리
+  sessionId?: string;       // 저장된 세션 ID
+  entriesCount?: number;    // 저장/조회된 엔트리 수
+  results?: unknown[];      // 검색 결과
+  error?: string;           // 에러 메시지
+  startedAt: number;        // 시작 시간
+  completedAt?: number;     // 완료 시간
+};
+
+// 파일 첨부
+export type Attachment = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  data: string;       // base64 encoded
+  preview?: string;   // object URL for images
 };
 
 // 메시지 목록
@@ -55,8 +92,14 @@ export const streamingStartedAtAtom = atom<number | null>(null);
 // 도구 진행 상태 목록
 export const toolProgressListAtom = atom<ToolProgress[]>([]);
 
+// 메모리 작업 목록
+export const memoryOperationsAtom = atom<MemoryOperation[]>([]);
+
 // thinking 레벨
 export const thinkingLevelAtom = atom<string | null>(null);
+
+// 첨부 파일 목록
+export const attachmentsAtom = atom<Attachment[]>([]);
 
 // 메시지 추가 액션
 export const addMessageAtom = atom(
@@ -76,7 +119,13 @@ export const addMessageAtom = atom(
 // 메시지 업데이트 액션 (스트리밍용)
 export const updateMessageAtom = atom(
   null,
-  (get, set, params: { id: string; content?: string | ContentBlock[]; isStreaming?: boolean }) => {
+  (get, set, params: {
+    id: string;
+    content?: string | ContentBlock[];
+    isStreaming?: boolean;
+    thinkingContent?: string;
+    isThinkingStreaming?: boolean;
+  }) => {
     const messages = get(messagesAtom);
     const idx = messages.findIndex((m) => m.id === params.id);
     if (idx === -1) return;
@@ -86,6 +135,8 @@ export const updateMessageAtom = atom(
       ...updated[idx],
       ...(params.content !== undefined && { content: params.content }),
       ...(params.isStreaming !== undefined && { isStreaming: params.isStreaming }),
+      ...(params.thinkingContent !== undefined && { thinkingContent: params.thinkingContent }),
+      ...(params.isThinkingStreaming !== undefined && { isThinkingStreaming: params.isThinkingStreaming }),
     };
     set(messagesAtom, updated);
   }
@@ -180,6 +231,7 @@ export const finishStreamingAtom = atom(
     set(streamingTextAtom, "");
     set(streamingStartedAtAtom, null);
     set(toolProgressListAtom, []);
+    set(memoryOperationsAtom, []);
   }
 );
 
@@ -198,6 +250,7 @@ export const streamingErrorAtom = atom(null, (get, set, params: { runId: string;
   set(streamingTextAtom, "");
   set(streamingStartedAtAtom, null);
   set(toolProgressListAtom, []);
+  set(memoryOperationsAtom, []);
 });
 
 // 도구 진행 상태 업데이트
@@ -211,6 +264,48 @@ export const updateToolProgressAtom = atom(null, (get, set, progress: ToolProgre
   } else {
     set(toolProgressListAtom, [...list, progress]);
   }
+});
+
+// 메모리 작업 시작
+export const startMemoryOperationAtom = atom(
+  null,
+  (get, set, params: { id: string; type: MemoryOperationType; query?: string }) => {
+    const operation: MemoryOperation = {
+      id: params.id,
+      type: params.type,
+      phase: params.type === "save" ? "extracting" : "searching",
+      query: params.query,
+      startedAt: Date.now(),
+    };
+    set(memoryOperationsAtom, [...get(memoryOperationsAtom), operation]);
+  }
+);
+
+// 메모리 작업 단계 업데이트
+export const updateMemoryOperationAtom = atom(
+  null,
+  (get, set, params: { id: string; phase?: MemoryOperationPhase; sessionId?: string; entriesCount?: number; results?: unknown[]; error?: string }) => {
+    const list = get(memoryOperationsAtom);
+    const idx = list.findIndex((op) => op.id === params.id);
+    if (idx === -1) return;
+
+    const updated = [...list];
+    updated[idx] = {
+      ...updated[idx],
+      ...(params.phase && { phase: params.phase }),
+      ...(params.sessionId && { sessionId: params.sessionId }),
+      ...(params.entriesCount !== undefined && { entriesCount: params.entriesCount }),
+      ...(params.results && { results: params.results }),
+      ...(params.error && { error: params.error }),
+      ...(params.phase === "complete" || params.phase === "error" ? { completedAt: Date.now() } : {}),
+    };
+    set(memoryOperationsAtom, updated);
+  }
+);
+
+// 스트리밍 완료시 메모리 작업 초기화
+export const clearMemoryOperationsAtom = atom(null, (_get, set) => {
+  set(memoryOperationsAtom, []);
 });
 
 // 헬퍼: content에서 텍스트 추출

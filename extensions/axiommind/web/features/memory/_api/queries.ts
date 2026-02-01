@@ -1,6 +1,6 @@
 import type { SearchResult, EntryType } from "../_stores/memory";
 
-const API_BASE = "/axiommind/api";
+const API_BASE = "/ax/api";
 
 export type SearchParams = {
   query: string;
@@ -21,6 +21,17 @@ export type TaskWithContext = {
   task: Record<string, unknown>;
   date: string;
   session: string;
+};
+
+export type GraduationStats = {
+  raw: number;
+  working: number;
+  candidate: number;
+  verified: number;
+  certified: number;
+  totalPromotions: number;
+  totalDemotions: number;
+  lastAutoPromotion?: string;
 };
 
 // 메모리 검색
@@ -77,6 +88,29 @@ export async function getPendingTasks(): Promise<TaskWithContext[]> {
   return data.tasks;
 }
 
+// Graduation 통계 조회
+export async function getGraduationStats(): Promise<GraduationStats> {
+  const res = await fetch(`${API_BASE}/graduation/stats`);
+  if (!res.ok) {
+    throw new Error(`Failed to fetch graduation stats: ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  return data.stats;
+}
+
+// 자동 승격 실행
+export async function runAutoPromotions(): Promise<{ promotedCount: number }> {
+  const res = await fetch(`${API_BASE}/graduation/run-auto`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to run auto promotions: ${res.statusText}`);
+  }
+
+  return res.json();
+}
+
 // React Query용 쿼리 옵션
 export const memoryQueries = {
   search: (params: SearchParams) => ({
@@ -93,5 +127,11 @@ export const memoryQueries = {
   tasks: {
     queryKey: ["memory", "tasks"] as const,
     queryFn: getPendingTasks,
+  },
+
+  graduationStats: {
+    queryKey: ["memory", "graduation", "stats"] as const,
+    queryFn: getGraduationStats,
+    staleTime: 30000, // 30초 캐싱
   },
 };
