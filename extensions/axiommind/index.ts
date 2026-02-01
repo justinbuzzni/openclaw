@@ -84,16 +84,26 @@ const plugin = {
     process.on("SIGTERM", shutdownHandler);
     process.on("SIGINT", shutdownHandler);
 
+    // 세션별 도구 안내 표시 여부 추적 (첫 메시지에만 표시)
+    const sessionToolsShown = new Set<string>();
+
     // 2. 에이전트 시작 시 - 세션 프리로드 + 경량 컨텍스트 주입
     api.on("before_agent_start", async (event: { prompt?: string; sessionId?: string }, ctx: AgentContext) => {
+      const sessionId = event.sessionId || ctx.sessionId || "default";
+
+      // 첫 메시지인지 확인
+      const isFirstMessage = !sessionToolsShown.has(sessionId);
+      if (isFirstMessage) {
+        sessionToolsShown.add(sessionId);
+      }
+
       if (!messageHandler) {
-        // 폴백: 기본 도구 안내만
+        // 폴백: 첫 메시지에만 기본 도구 안내
         return {
-          prependContext: generateLightMemoryContext(),
+          prependContext: generateLightMemoryContext(undefined, undefined, { includeToolsList: isFirstMessage }),
         };
       }
 
-      const sessionId = event.sessionId || ctx.sessionId || "default";
       const userPrompt = event.prompt || "";
 
       try {
@@ -121,7 +131,7 @@ const plugin = {
           // 첫 번째 확인 질문만 컨텍스트에 추가
           const preloaded = messageHandler.getPreloadedContext(sessionId);
           return {
-            prependContext: generateLightMemoryContext(preloaded, result.memories),
+            prependContext: generateLightMemoryContext(preloaded, result.memories, { includeToolsList: isFirstMessage }),
             // 확인 질문을 assistant 응답에 포함하도록 힌트
             systemNote: `Before answering, consider asking: "${confirmQuestions[0]}"`,
           };
@@ -130,12 +140,12 @@ const plugin = {
         // 경량 컨텍스트 생성
         const preloaded = messageHandler.getPreloadedContext(sessionId);
         return {
-          prependContext: generateLightMemoryContext(preloaded, result.memories),
+          prependContext: generateLightMemoryContext(preloaded, result.memories, { includeToolsList: isFirstMessage }),
         };
       } catch (error) {
         logger.warn(`Memory retrieval failed: ${error}`);
         return {
-          prependContext: generateLightMemoryContext(),
+          prependContext: generateLightMemoryContext(undefined, undefined, { includeToolsList: isFirstMessage }),
         };
       }
     });
@@ -152,6 +162,9 @@ const plugin = {
         if (messageHandler) {
           await messageHandler.onSessionEnd(event.sessionId);
         }
+
+        // 세션 도구 안내 추적 정리
+        sessionToolsShown.delete(event.sessionId);
       } catch (error) {
         logger.error(`Failed to process session end: ${error}`);
       }

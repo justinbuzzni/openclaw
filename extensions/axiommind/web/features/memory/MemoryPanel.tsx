@@ -1,11 +1,12 @@
 "use client";
 
 import { memo, useCallback, type ChangeEvent, type KeyboardEvent } from "react";
+import Link from "next/link";
 import { useMemorySearch, usePendingTasks, useGraduationStats } from "./_hooks/useMemory";
 import SearchResults from "./SearchResults";
 import GraduationPipeline from "./GraduationPipeline";
 import { cn } from "@/lib/utils";
-import { Search, ListTodo, Database, CheckCircle2, ChevronRight, BrainCircuit } from "lucide-react";
+import { Search, ListTodo, Database, CheckCircle2, ChevronRight, BrainCircuit, LayoutDashboard } from "lucide-react";
 
 const MemoryPanel = () => {
   const { searchQuery, setSearchQuery, search, results, isLoading } = useMemorySearch();
@@ -31,14 +32,23 @@ const MemoryPanel = () => {
   return (
     <div className="flex flex-col h-full w-full">
       {/* Header */}
-      <div className="px-6 py-5 border-b border-white/5 flex items-center gap-3">
-         <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
-             <Database className="w-5 h-5" />
+      <div className="px-6 py-5 border-b border-white/5 flex items-center justify-between">
+         <div className="flex items-center gap-3">
+           <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400">
+               <Database className="w-5 h-5" />
+           </div>
+           <div>
+              <h2 className="text-sm font-bold text-gray-200 tracking-wide">MEMORY BANK</h2>
+              <p className="text-[10px] text-gray-500 font-medium">KNOWLEDGE & TASKS</p>
+           </div>
          </div>
-         <div>
-            <h2 className="text-sm font-bold text-gray-200 tracking-wide">MEMORY BANK</h2>
-            <p className="text-[10px] text-gray-500 font-medium">KNOWLEDGE & TASKS</p>
-         </div>
+         <Link
+           href="/dashboard"
+           className="p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
+           title="Open Dashboard"
+         >
+           <LayoutDashboard className="w-5 h-5 text-gray-400 hover:text-gray-200" />
+         </Link>
       </div>
 
       {/* Search Bar */}

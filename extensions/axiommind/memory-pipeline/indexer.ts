@@ -531,6 +531,63 @@ export class MemoryIndexer {
     });
   }
 
+  /**
+   * 타입별 엔트리 수 조회 (Dashboard용)
+   */
+  async getEntriesByType(): Promise<Record<string, number>> {
+    if (!this.db) return {};
+
+    const rows = await this.runSelect(`
+      SELECT entry_type, CAST(COUNT(*) AS INTEGER) as count
+      FROM entries
+      GROUP BY entry_type
+    `);
+
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      result[row.entry_type as string] = row.count as number;
+    }
+    return result;
+  }
+
+  /**
+   * 가장 많이 접근된 엔트리 조회 (Dashboard용)
+   */
+  async getTopAccessedEntries(limit = 10): Promise<EntryWithMeta[]> {
+    if (!this.db) return [];
+
+    const rows = await this.runSelect(
+      `
+      SELECT e.*, s.date as session_date, s.title as session_title, s.idr_path
+      FROM entries e
+      JOIN sessions s ON e.session_id = s.id
+      WHERE e.access_count > 0
+      ORDER BY e.access_count DESC, e.last_accessed_at DESC
+      LIMIT ?
+      `,
+      [limit]
+    );
+
+    return rows.map((row) => ({
+      id: row.id as string,
+      sessionId: row.session_id as string,
+      entryType: row.entry_type as string,
+      title: row.title as string,
+      content: JSON.parse(row.content as string) as AnyEntry,
+      textForSearch: row.text_for_search as string,
+      memoryStage: row.memory_stage as string,
+      promotedAt: row.promoted_at as string | null,
+      promotionReason: row.promotion_reason as string | null,
+      lastAccessedAt: row.last_accessed_at as string | null,
+      accessCount: (row.access_count as number) || 0,
+      confirmationCount: (row.confirmation_count as number) || 0,
+      createdAt: row.created_at as string,
+      sessionDate: row.session_date as string,
+      sessionTitle: row.session_title as string,
+      idrPath: row.idr_path as string,
+    }));
+  }
+
   async close(): Promise<void> {
     if (this.db) {
       return new Promise((resolve) => {

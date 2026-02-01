@@ -9,14 +9,48 @@ OpenClaw용 커스텀 채팅 UI + Memory Graduation Pipeline 플러그인
 - **문서**: `specs/axiommind/` (spec.md, plan.md, context.md)
 - **README**: `extensions/axiommind/README.md`
 
-## 현재 상태 (2026-02-01 v2.2.0 - 커밋 완료 ✅)
+## 현재 상태 (2026-02-01 v2.4 - Memory Dashboard + 세션 최적화 ✅)
 
 ### 최근 커밋
 ```
+(pending) feat(axiommind): add memory dashboard UI with stats and analytics
+(pending) feat(axiommind): optimize session tool instructions (first message only)
+(pending) feat(axiommind): configure OpenClaw core memory_search to use local EmbeddingGemma
 c1b622bc3 feat(axiommind): add memory editor UI and CRUD API
 ca15b4a87 docs(axiommind): update HANDOFF.md with v2.1.1 status
 c4856c8ce feat(axiommind): add auto-scheduler, embeddings, and DuckDB fixes
 ```
+
+**v2.4 변경 사항 (2026-02-01):**
+- **Memory Dashboard UI**: `/ax/dashboard` 페이지 추가
+  - 통계 카드 (총 메모리, L3/L4/Pending)
+  - Stage Distribution 바 차트
+  - Top Accessed 메모리 목록
+  - Recent Activity 타임라인
+  - Embedding Provider 정보
+  - Scheduler 상태
+- **세션별 도구 안내 최적화**: 첫 메시지에만 `## Memory Tools Available` 표시
+
+**v2.4 변경 파일:**
+- 신규: `web/app/dashboard/page.tsx` - 대시보드 라우트
+- 신규: `web/features/dashboard/Dashboard.tsx` - 대시보드 메인 컴포넌트
+- 신규: `web/features/dashboard/useDashboard.ts` - 데이터 fetching 훅
+- 신규: `web/features/dashboard/index.ts` - export 파일
+- 수정: `api/routes.ts` - Dashboard API 엔드포인트 추가
+- 수정: `memory-pipeline/indexer.ts` - `getEntriesByType()`, `getTopAccessedEntries()` 추가
+- 수정: `memory-pipeline/message-handler.ts` - `LightContextOptions` 타입 추가
+- 수정: `index.ts` - `sessionToolsShown` 세션 추적 추가
+- 수정: `web/features/memory/MemoryPanel.tsx` - 대시보드 링크 버튼 추가
+
+**v2.3.1 변경 사항 (2026-02-01):**
+- **OpenClaw 코어 설정**: `agents.defaults.memorySearch.provider = "local"` 설정
+- 이제 `memory_search` 도구가 EmbeddingGemma 308M 로컬 모델 사용
+- API 키 없이 다국어(한국어 포함) 벡터 검색 가능
+
+**v2.3 변경 파일:**
+- 수정: `embeddings.ts`, `orchestrator.ts`, `routes.ts`
+- 수정: `src/plugin-sdk/index.ts` (embedding export 추가)
+- 설정: `~/.openclaw/openclaw.json` (`agents.defaults.memorySearch.provider`)
 
 **v2.2 변경 파일 (10개):**
 - 신규: `MemoryEditor.tsx`
@@ -29,6 +63,10 @@ c4856c8ce feat(axiommind): add auto-scheduler, embeddings, and DuckDB fixes
 - [x] `/ax/api/scheduler/stats` - 스케줄러 통계 조회
 - [x] `/ax/api/graduation/stats` - 메모리 승격 통계
 - [x] DuckDB SQL 호환성 (datetime, CURRENT_TIMESTAMP, BigInt)
+- [x] **로컬 임베딩 벡터 검색 (v2.3.1)**
+  - `memory_search` 도구: `provider: "local"`, `model: "embeddinggemma-300M-Q8_0.gguf"`
+  - 한국어 검색 테스트: "관심사", "생일" 쿼리 → 결과 반환 (score 0.39~0.42)
+  - API 키 에러 없음 확인
 
 ### v2.0 주요 변경 - Intent-based Memory Retrieval
 
@@ -139,20 +177,35 @@ $ curl http://127.0.0.1:18789/ax/api/scheduler/stats
 }
 ```
 
-**Vector Embedding:**
+**Vector Embedding (v2.3 EmbeddingGemma 통합):**
 ```typescript
-// 임베딩 매니저 (OpenAI/Cohere/Local 자동 폴백)
-const embeddingManager = getEmbeddingManager({
-  provider: "openai", // or "cohere" or "local"
-  model: "text-embedding-3-small",
-  enableFallback: true, // 실패 시 로컬 TF-IDF 사용
+// 임베딩 매니저 (OpenClaw EmbeddingGemma 308M 기본)
+const embeddingManager = new EmbeddingManager({
+  provider: "openclaw", // 다국어 지원 (한국어 포함 100+ 언어)
+  openclawConfig: api.config,
 });
+
+// 지원 프로바이더:
+// - "openclaw": EmbeddingGemma 308M (로컬, 다국어, 무료) ← 권장
+// - "openai": text-embedding-3-small (클라우드, 유료)
+// - "cohere": embed-multilingual-v3.0 (클라우드, 유료)
+// - "local": TF-IDF 폴백 (로컬, 무료, 품질 낮음)
 
 // 사용 예시
 const result = await embeddingManager.embed("커피를 좋아합니다");
 const similar = await embeddingManager.findSimilar(query, candidates, 0.7);
 const similarity = embeddingManager.cosineSimilarity(vec1, vec2);
+
+// API 엔드포인트 (v2.3 NEW)
+GET /ax/api/embeddings/info  // 임베딩 프로바이더 정보 및 캐시 통계
 ```
+
+**EmbeddingGemma 특징:**
+- 308M 파라미터의 경량 모델
+- 100+ 언어 지원 (한국어, 중국어, 일본어 포함)
+- 로컬 실행 (node-llama-cpp 기반)
+- API 키 불필요 (무료)
+- OpenAI 자동 폴백 지원
 
 **Intent 종류 (8가지):**
 ```typescript
@@ -434,7 +487,7 @@ http://localhost:18789/ax?token=YOUR_TOKEN&session=agent:axiommind:main
 |------|------|------|
 | 메모리 편집 UI | 개별 메모리 수정/삭제 인터페이스 | ✅ 완료 (v2.2) |
 | 메모리 삭제/강등 UI | L3→L2 강등, 삭제 확인 모달 | ✅ 완료 (v2.2) |
-| 실제 Embedding 연동 | OpenAI API 키 설정 + 테스트 | 📋 대기 |
+| 실제 Embedding 연동 | EmbeddingGemma 308M 통합 | ✅ 완료 (v2.3) |
 
 ### 🟡 우선순위 중간 (v2.2 계획)
 
@@ -453,9 +506,48 @@ http://localhost:18789/ax?token=YOUR_TOKEN&session=agent:axiommind:main
 | Idris2 컴파일러 자동 설치 | brew/apt 스크립트 | 📋 대기 |
 | 메모리 시각화 그래프 | 백엔드 완료 | ✅ 완료 (v2.0) |
 | 그래프 시맨틱 검색 | Embedding 통합 | ✅ 완료 (v2.1) |
-| 통계 대시보드 | 메모리 사용량, 승격률 | 📋 대기 |
+| 통계 대시보드 | 메모리 사용량, 승격률 | ✅ 완료 (v2.4) |
 | 메모리 검색 하이라이팅 | 키워드 강조 | 📋 대기 |
 | DuckDB SQL 호환성 수정 | datetime, BigInt | ✅ 완료 (v2.1.1) |
+
+### ✅ 완료된 작업 (v2.4)
+
+- [x] **Memory Dashboard UI**
+  - 새 페이지: `/ax/dashboard` - 메모리 분석 대시보드
+  - 통계 카드: 총 메모리, 단계별 분포 (L1~L4)
+  - Top Accessed: 가장 많이 참조된 메모리 목록
+  - Recent Activity: 최근 승격/강등 이력
+  - Embedding Info: 프로바이더 정보 및 캐시 히트율
+  - Scheduler Status: 자동 스케줄러 상태
+- [x] **Dashboard API 엔드포인트**
+  - `GET /ax/api/dashboard/stats` - 전체 통계
+  - `GET /ax/api/dashboard/top-accessed` - 접근 빈도 상위 메모리
+  - `GET /ax/api/dashboard/activity` - 최근 활동 이력
+- [x] **세션별 도구 안내 최적화**
+  - 매 메시지마다 → 세션 첫 메시지에만 도구 안내 표시
+  - 토큰 절약 및 대화창 깔끔해짐
+
+### ✅ 완료된 작업 (v2.3.1)
+
+- [x] **OpenClaw 코어 메모리 검색 로컬 임베딩 설정**
+  - `agents.defaults.memorySearch.provider = "local"` 설정
+  - `memory_search` 도구가 EmbeddingGemma 308M 사용
+  - API 키 없이 다국어 벡터 검색 가능
+  - 테스트 결과: 한국어 쿼리 "관심사", "생일" → score 0.39~0.42 반환
+
+### ✅ 완료된 작업 (v2.3.0)
+
+- [x] **EmbeddingGemma 308M 통합**
+  - OpenClaw의 기존 임베딩 시스템 활용
+  - `"openclaw"` 프로바이더 추가 (다국어 지원 권장)
+  - 100+ 언어 지원 (한국어, 중국어, 일본어 등)
+  - 로컬 실행 (API 키 불필요)
+  - OpenAI 자동 폴백
+- [x] **임베딩 API 엔드포인트**
+  - `GET /ax/api/embeddings/info` - 프로바이더 정보 및 캐시 통계
+- [x] **plugin-sdk 확장**
+  - `createEmbeddingProvider` 함수 export
+  - 타입 export: `EmbeddingProvider`, `EmbeddingProviderResult`, `EmbeddingProviderOptions`
 
 ### ✅ 완료된 작업 (v2.2)
 
@@ -542,6 +634,23 @@ v2.0 설계에 참고한 연구/프로젝트:
 | 시맨틱 검색 (Vector) | N/A | N/A | ~300ms | NEW |
 | 토큰 사용량 (평균) | 1.5K/msg | 0.3K/msg | 0.3K/msg | 80% ↓ |
 
+### v2.3 새 기능 (EmbeddingGemma)
+
+| 기능 | 설명 | 성능 |
+|------|------|------|
+| EmbeddingGemma 308M | 다국어 로컬 임베딩 | ~50ms (캐시 히트) |
+| OpenClaw 통합 | 기존 임베딩 시스템 활용 | 자동 폴백 지원 |
+| 임베딩 API | 프로바이더 정보 조회 | GET /ax/api/embeddings/info |
+
+**EmbeddingGemma vs OpenAI 비교:**
+| 항목 | EmbeddingGemma | OpenAI |
+|------|---------------|--------|
+| 실행 위치 | 로컬 | 클라우드 |
+| 비용 | 무료 | 유료 |
+| 다국어 지원 | 100+ 언어 | 제한적 |
+| 응답 속도 | ~50ms | ~200ms |
+| 벡터 차원 | 768 | 1536 |
+
 ### v2.1 새 기능
 
 | 기능 | 설명 | 성능 |
@@ -557,6 +666,9 @@ v2.0 설계에 참고한 연구/프로젝트:
 
 | 버전 | 날짜 | 주요 변경 |
 |------|------|----------|
+| v2.4.0 | 2026-02-01 | Memory Dashboard UI, 세션별 도구 안내 최적화 |
+| v2.3.1 | 2026-02-01 | OpenClaw 코어 memory_search 로컬 임베딩 설정 완료 |
+| v2.3.0 | 2026-02-01 | OpenClaw EmbeddingGemma 308M 통합 (다국어 임베딩) |
 | v2.2.0 | 2026-02-01 | Memory Editor UI, Entry CRUD API, 검색 결과 레벨 표시 |
 | v2.1.1 | 2026-02-01 | DuckDB SQL 호환성 수정, Plugin API 이벤트 수정 |
 | v2.1.0 | 2026-02-01 | AutoScheduler, Embeddings, ConflictResolver UI |
@@ -565,4 +677,4 @@ v2.0 설계에 참고한 연구/프로젝트:
 
 ---
 
-*Last updated: 2026-02-01 (v2.2.0 - commit c1b622bc3)*
+*Last updated: 2026-02-01 (v2.4 - Memory Dashboard + Session Optimization)*

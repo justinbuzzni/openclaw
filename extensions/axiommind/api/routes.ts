@@ -59,6 +59,20 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         if (apiPath === "scheduler/stats") {
           return await handleSchedulerStats(req, res, pipeline);
         }
+        // Embeddings API
+        if (apiPath === "embeddings/info") {
+          return await handleEmbeddingsInfo(req, res, pipeline);
+        }
+        // Dashboard API
+        if (apiPath === "dashboard/stats") {
+          return await handleDashboardStats(req, res, pipeline);
+        }
+        if (apiPath === "dashboard/top-accessed") {
+          return await handleTopAccessed(req, res, url, pipeline);
+        }
+        if (apiPath === "dashboard/activity") {
+          return await handleRecentActivity(req, res, url, pipeline);
+        }
       }
 
       // PUT for updates
@@ -550,5 +564,92 @@ async function handleDeleteEntry(
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ success: true }));
+  return true;
+}
+
+async function handleEmbeddingsInfo(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const providerInfo = pipeline.embeddings.getProviderInfo();
+  const cacheStats = pipeline.embeddings.getCacheStats();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      provider: providerInfo,
+      cache: cacheStats,
+      model: providerInfo.model || "EmbeddingGemma-308M (default)",
+      description:
+        "EmbeddingGemma is a multilingual embedding model supporting 100+ languages including Korean, Chinese, Japanese, and more.",
+    })
+  );
+  return true;
+}
+
+// === Dashboard API Handlers ===
+
+async function handleDashboardStats(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  // Graduation stats
+  const graduationStats = await pipeline.getGraduationStats();
+
+  // Scheduler stats
+  const scheduler = getAutoScheduler(pipeline);
+  const schedulerStats = scheduler.getStats();
+
+  // Embedding info
+  const embeddingInfo = pipeline.embeddings.getProviderInfo();
+  const cacheStats = pipeline.embeddings.getCacheStats();
+
+  // Recent entries count by type
+  const entriesByType = await pipeline.indexer?.getEntriesByType() || {};
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({
+    graduation: graduationStats,
+    scheduler: schedulerStats,
+    embedding: {
+      provider: embeddingInfo.name,
+      model: embeddingInfo.model || "unknown",
+      available: embeddingInfo.available,
+      cacheSize: cacheStats.size,
+    },
+    entriesByType,
+  }));
+  return true;
+}
+
+async function handleTopAccessed(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const limit = parseInt(url.searchParams.get("limit") || "10", 10);
+
+  const entries = await pipeline.indexer?.getTopAccessedEntries(limit) || [];
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ entries }));
+  return true;
+}
+
+async function handleRecentActivity(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+
+  const history = await pipeline.getPromotionHistory(limit);
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ activities: history }));
   return true;
 }
