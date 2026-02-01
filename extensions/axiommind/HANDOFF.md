@@ -9,22 +9,25 @@ OpenClaw용 커스텀 채팅 UI + Memory Graduation Pipeline 플러그인
 - **문서**: `specs/axiommind/` (spec.md, plan.md, context.md)
 - **README**: `extensions/axiommind/README.md`
 
-## 현재 상태 (2026-02-01 v2.1.1 - 커밋 완료 ✅)
+## 현재 상태 (2026-02-01 v2.2.0 - 커밋 완료 ✅)
 
 ### 최근 커밋
 ```
+c1b622bc3 feat(axiommind): add memory editor UI and CRUD API
+ca15b4a87 docs(axiommind): update HANDOFF.md with v2.1.1 status
 c4856c8ce feat(axiommind): add auto-scheduler, embeddings, and DuckDB fixes
 ```
 
-**변경 파일 (13개):**
-- 신규: `auto-scheduler.ts`, `embeddings.ts`, `memory-graph.ts`, `semantic-cache.ts`, `ConflictResolver.tsx`
-- 수정: `index.ts`, `routes.ts`, `graduation.ts`, `indexer.ts`, `orchestrator.ts`, `similarity.ts`, `conflict-resolver.ts`, `HANDOFF.md`
+**v2.2 변경 파일 (10개):**
+- 신규: `MemoryEditor.tsx`
+- 수정: `routes.ts`, `indexer.ts`, `orchestrator.ts`, `search.ts`, `types.ts`, `SearchResults.tsx`, `queries.ts`, `useMemory.ts`, `memory.ts`
 
 ### 테스트 완료 항목 ✅
 - [x] 게이트웨이 안정 실행 (크래시 없음)
+- [x] `/ax/api/entries` - 엔트리 목록 조회
+- [x] `/ax/api/entries/:id` - 개별 엔트리 조회
 - [x] `/ax/api/scheduler/stats` - 스케줄러 통계 조회
 - [x] `/ax/api/graduation/stats` - 메모리 승격 통계
-- [x] `/ax/api/conflicts` - 충돌 목록 조회
 - [x] DuckDB SQL 호환성 (datetime, CURRENT_TIMESTAMP, BigInt)
 
 ### v2.0 주요 변경 - Intent-based Memory Retrieval
@@ -427,11 +430,11 @@ http://localhost:18789/ax?token=YOUR_TOKEN&session=agent:axiommind:main
 
 ### 🔴 우선순위 높음 (다음 스프린트)
 
-| 작업 | 설명 | 예상 시간 |
-|------|------|----------|
-| 메모리 편집 UI | 개별 메모리 수정/삭제 인터페이스 | 4h |
-| 메모리 삭제/강등 UI | L3→L2 강등, 삭제 확인 모달 | 3h |
-| 실제 Embedding 연동 | OpenAI API 키 설정 + 테스트 | 2h |
+| 작업 | 설명 | 상태 |
+|------|------|------|
+| 메모리 편집 UI | 개별 메모리 수정/삭제 인터페이스 | ✅ 완료 (v2.2) |
+| 메모리 삭제/강등 UI | L3→L2 강등, 삭제 확인 모달 | ✅ 완료 (v2.2) |
+| 실제 Embedding 연동 | OpenAI API 키 설정 + 테스트 | 📋 대기 |
 
 ### 🟡 우선순위 중간 (v2.2 계획)
 
@@ -453,6 +456,23 @@ http://localhost:18789/ax?token=YOUR_TOKEN&session=agent:axiommind:main
 | 통계 대시보드 | 메모리 사용량, 승격률 | 📋 대기 |
 | 메모리 검색 하이라이팅 | 키워드 강조 | 📋 대기 |
 | DuckDB SQL 호환성 수정 | datetime, BigInt | ✅ 완료 (v2.1.1) |
+
+### ✅ 완료된 작업 (v2.2)
+
+- [x] **메모리 편집 UI** (`MemoryEditor.tsx`)
+  - 메모리 상세 보기/편집 모달
+  - 제목 및 컨텐츠 JSON 수정
+  - 승격/강등 버튼
+  - 삭제 확인 모달
+  - 메타데이터 표시 (접근 횟수, 확인 횟수, 생성일 등)
+- [x] **Entry CRUD API**
+  - `GET /ax/api/entries` - 엔트리 목록 (페이징, 필터링)
+  - `GET /ax/api/entries/:id` - 개별 엔트리 조회
+  - `PUT /ax/api/entries/:id` - 엔트리 수정
+  - `DELETE /ax/api/entries/:id` - 엔트리 삭제
+- [x] **검색 결과 UI 개선**
+  - 메모리 레벨 배지 표시 (L1~L4)
+  - 클릭 시 편집 모달 열기
 
 ### ✅ 완료된 작업 (v2.1.1)
 
@@ -537,6 +557,7 @@ v2.0 설계에 참고한 연구/프로젝트:
 
 | 버전 | 날짜 | 주요 변경 |
 |------|------|----------|
+| v2.2.0 | 2026-02-01 | Memory Editor UI, Entry CRUD API, 검색 결과 레벨 표시 |
 | v2.1.1 | 2026-02-01 | DuckDB SQL 호환성 수정, Plugin API 이벤트 수정 |
 | v2.1.0 | 2026-02-01 | AutoScheduler, Embeddings, ConflictResolver UI |
 | v2.0.0 | 2026-02-01 | Intent-based Memory, 3-Tier Architecture |
@@ -544,4 +565,4 @@ v2.0 설계에 참고한 연구/프로젝트:
 
 ---
 
-*Last updated: 2026-02-01 (v2.1.1 - commit c4856c8ce)*
+*Last updated: 2026-02-01 (v2.2.0 - commit c1b622bc3)*
