@@ -9,7 +9,23 @@ OpenClaw용 커스텀 채팅 UI + Memory Graduation Pipeline 플러그인
 - **문서**: `specs/axiommind/` (spec.md, plan.md, context.md)
 - **README**: `extensions/axiommind/README.md`
 
-## 현재 상태 (2026-02-01 v2.1.1 업데이트)
+## 현재 상태 (2026-02-01 v2.1.1 - 커밋 완료 ✅)
+
+### 최근 커밋
+```
+c4856c8ce feat(axiommind): add auto-scheduler, embeddings, and DuckDB fixes
+```
+
+**변경 파일 (13개):**
+- 신규: `auto-scheduler.ts`, `embeddings.ts`, `memory-graph.ts`, `semantic-cache.ts`, `ConflictResolver.tsx`
+- 수정: `index.ts`, `routes.ts`, `graduation.ts`, `indexer.ts`, `orchestrator.ts`, `similarity.ts`, `conflict-resolver.ts`, `HANDOFF.md`
+
+### 테스트 완료 항목 ✅
+- [x] 게이트웨이 안정 실행 (크래시 없음)
+- [x] `/ax/api/scheduler/stats` - 스케줄러 통계 조회
+- [x] `/ax/api/graduation/stats` - 메모리 승격 통계
+- [x] `/ax/api/conflicts` - 충돌 목록 조회
+- [x] DuckDB SQL 호환성 (datetime, CURRENT_TIMESTAMP, BigInt)
 
 ### v2.0 주요 변경 - Intent-based Memory Retrieval
 
@@ -409,26 +425,49 @@ http://localhost:18789/ax?token=YOUR_TOKEN&session=agent:axiommind:main
 
 ## 남은 작업
 
-### 우선순위 높음
-- [x] ~~자동 승격 스케줄러~~ (v2.1 완료 - auto-scheduler.ts)
-- [x] ~~충돌 해결 UI~~ (v2.1 완료 - ConflictResolver.tsx)
-- [x] ~~Vector Embedding 통합~~ (v2.1 완료 - embeddings.ts)
+### 🔴 우선순위 높음 (다음 스프린트)
 
-### 우선순위 중간
-- [x] ~~Intent 기반 메모리 검색~~ (v2.0 완료)
-- [x] ~~Semantic Cache~~ (v2.0 완료)
-- [x] ~~Anti-Creepy Filter~~ (v2.0 완료)
-- [ ] 메모리 편집 UI
-- [ ] 메모리 삭제/강등 UI
-- [ ] 내보내기/가져오기 기능
+| 작업 | 설명 | 예상 시간 |
+|------|------|----------|
+| 메모리 편집 UI | 개별 메모리 수정/삭제 인터페이스 | 4h |
+| 메모리 삭제/강등 UI | L3→L2 강등, 삭제 확인 모달 | 3h |
+| 실제 Embedding 연동 | OpenAI API 키 설정 + 테스트 | 2h |
 
-### 우선순위 낮음
-- [ ] Idris2 컴파일러 자동 설치 스크립트
-- [x] ~~메모리 시각화 그래프~~ (v2.0 memory-graph.ts)
-- [x] ~~그래프 시맨틱 검색~~ (v2.1 embeddings 통합)
-- [ ] 통계 대시보드
-- [ ] 메모리 검색 결과 하이라이팅
-- [x] ~~DuckDB SQL 호환성 수정~~ (v2.1.1 완료 - datetime → interval 문법)
+### 🟡 우선순위 중간 (v2.2 계획)
+
+| 작업 | 설명 | 상태 |
+|------|------|------|
+| Intent 기반 메모리 검색 | 필요시에만 검색 | ✅ 완료 (v2.0) |
+| Semantic Cache | 중복 검색 방지 | ✅ 완료 (v2.0) |
+| Anti-Creepy Filter | 민감 정보 필터링 | ✅ 완료 (v2.0) |
+| 내보내기/가져오기 | JSON/Markdown 포맷 | 📋 대기 |
+| 그래프 시각화 UI | D3.js 기반 메모리 그래프 | 📋 대기 |
+
+### 🟢 우선순위 낮음 (Backlog)
+
+| 작업 | 설명 | 상태 |
+|------|------|------|
+| Idris2 컴파일러 자동 설치 | brew/apt 스크립트 | 📋 대기 |
+| 메모리 시각화 그래프 | 백엔드 완료 | ✅ 완료 (v2.0) |
+| 그래프 시맨틱 검색 | Embedding 통합 | ✅ 완료 (v2.1) |
+| 통계 대시보드 | 메모리 사용량, 승격률 | 📋 대기 |
+| 메모리 검색 하이라이팅 | 키워드 강조 | 📋 대기 |
+| DuckDB SQL 호환성 수정 | datetime, BigInt | ✅ 완료 (v2.1.1) |
+
+### ✅ 완료된 작업 (v2.1.1)
+
+- [x] 자동 승격 스케줄러 (`auto-scheduler.ts`)
+- [x] 충돌 해결 UI (`ConflictResolver.tsx`)
+- [x] Vector Embedding 모듈 (`embeddings.ts`)
+- [x] Memory Graph 모듈 (`memory-graph.ts`)
+- [x] Semantic Cache 모듈 (`semantic-cache.ts`)
+- [x] DuckDB SQL 호환성 수정
+  - `datetime()` → `current_timestamp - interval 'X days'`
+  - `CURRENT_TIMESTAMP` → `now()`
+  - `COUNT(*)` / `MAX()` BigInt → `CAST(... AS INTEGER)`
+- [x] Plugin API 이벤트 핸들러 수정
+  - `shutdown` → `process.on("SIGTERM/SIGINT")`
+  - `session_start` → `before_agent_start` lazy-load
 
 ## 데이터 저장 위치
 
@@ -494,4 +533,15 @@ v2.0 설계에 참고한 연구/프로젝트:
 
 ---
 
-*Last updated: 2026-02-01 (v2.1.1)*
+## 개발 히스토리
+
+| 버전 | 날짜 | 주요 변경 |
+|------|------|----------|
+| v2.1.1 | 2026-02-01 | DuckDB SQL 호환성 수정, Plugin API 이벤트 수정 |
+| v2.1.0 | 2026-02-01 | AutoScheduler, Embeddings, ConflictResolver UI |
+| v2.0.0 | 2026-02-01 | Intent-based Memory, 3-Tier Architecture |
+| v1.0.0 | 2026-01-30 | 초기 버전 - Memory Graduation Pipeline |
+
+---
+
+*Last updated: 2026-02-01 (v2.1.1 - commit c4856c8ce)*
