@@ -16,6 +16,7 @@ import { GraduationManager } from "./graduation.js";
 import { extractSessionFromContext } from "./context-extractor.js";
 import { ConflictResolver, type Resolution } from "./conflict-resolver.js";
 import { SimilarityChecker, type SimilarEntry } from "./similarity.js";
+import { EmbeddingManager } from "./embeddings.js";
 import type {
   Session,
   ProcessResult,
@@ -64,6 +65,7 @@ export class MemoryPipeline extends EventEmitter {
   public graduation: GraduationManager | null = null;
   public conflictResolver: ConflictResolver | null = null;
   public similarityChecker: SimilarityChecker | null = null;
+  public embeddings: EmbeddingManager;
 
   private idrisAvailable: boolean = false;
 
@@ -78,6 +80,12 @@ export class MemoryPipeline extends EventEmitter {
     this.validator = new IdrisValidator(this.dataDir);
     this.indexer = new MemoryIndexer(this.dataDir);
     this.search = new MemorySearch(this.indexer);
+
+    // 임베딩 매니저 초기화 (EmbeddingGemma 308M 다국어 지원)
+    this.embeddings = new EmbeddingManager({
+      provider: "openclaw",
+      openclawConfig: api.config,
+    });
   }
 
   /**

@@ -2,6 +2,7 @@
  * Vector Embeddings Module
  *
  * 다양한 임베딩 프로바이더 지원:
+ * - OpenClaw (EmbeddingGemma 308M - 다국어 지원, 권장)
  * - OpenAI (text-embedding-3-small, text-embedding-ada-002)
  * - Cohere (embed-english-v3.0, embed-multilingual-v3.0)
  * - Local fallback (TF-IDF 기반)
@@ -11,7 +12,15 @@
  * - 배치 처리 (여러 텍스트 한 번에 임베딩)
  * - 자동 폴백 (API 실패 시 로컬 임베딩)
  * - 코사인 유사도 계산
+ *
+ * 권장 설정:
+ * - 다국어(한국어 포함): provider: "openclaw" (EmbeddingGemma 308M)
+ * - 영어 중심: provider: "openai" (text-embedding-3-small)
  */
+
+// OpenClawConfig is passed from orchestrator, avoid direct import to prevent build issues
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type OpenClawConfigLike = Record<string, any>;
 
 // === Types ===
 
@@ -23,7 +32,7 @@ export interface EmbeddingVector {
 }
 
 export interface EmbeddingConfig {
-  provider: "openai" | "cohere" | "local";
+  provider: "openclaw" | "openai" | "cohere" | "local";
   model?: string;
   apiKey?: string;
   baseUrl?: string;
@@ -31,6 +40,7 @@ export interface EmbeddingConfig {
   maxBatchSize: number;
   enableFallback: boolean;
   dimensions?: number; // for dimension reduction
+  openclawConfig?: OpenClawConfigLike; // OpenClaw config for "openclaw" provider
 }
 
 export interface EmbeddingProvider {
@@ -50,7 +60,7 @@ export interface EmbeddingCacheEntry {
 // === Constants ===
 
 const DEFAULT_CONFIG: EmbeddingConfig = {
-  provider: "local",
+  provider: "openclaw", // 다국어 지원 EmbeddingGemma 308M 사용
   cacheTTL: 24 * 60 * 60 * 1000, // 24시간
   maxBatchSize: 100,
   enableFallback: true,
@@ -66,6 +76,95 @@ const COHERE_MODELS = {
   "embed-english-v3.0": { dimensions: 1024, maxTokens: 512 },
   "embed-multilingual-v3.0": { dimensions: 1024, maxTokens: 512 },
 };
+
+// === OpenClaw Provider (EmbeddingGemma 308M) ===
+// 다국어 지원 (한국어 포함 100+ 언어), 로컬 실행, 무료
+
+// Core provider interface (matches OpenClaw's EmbeddingProvider)
+interface CoreEmbeddingProvider {
+  id: string;
+  model: string;
+  embedQuery: (text: string) => Promise<number[]>;
+  embedBatch: (texts: string[]) => Promise<number[][]>;
+}
+
+class OpenClawEmbeddingProvider implements EmbeddingProvider {
+  name = "openclaw";
+  private config: EmbeddingConfig;
+  private coreProvider: CoreEmbeddingProvider | null = null;
+  private initPromise: Promise<void> | null = null;
+  private initError: Error | null = null;
+
+  constructor(config: EmbeddingConfig) {
+    this.config = config;
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (this.coreProvider) return;
+    if (this.initError) throw this.initError;
+
+    if (!this.initPromise) {
+      this.initPromise = this.initialize();
+    }
+
+    await this.initPromise;
+  }
+
+  private async initialize(): Promise<void> {
+    try {
+      // Dynamic import to avoid build-time dependency issues
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pluginSdk: any = await import("openclaw/plugin-sdk");
+      const createEmbeddingProvider = pluginSdk.createEmbeddingProvider || pluginSdk.default?.createEmbeddingProvider;
+
+      if (!createEmbeddingProvider) {
+        throw new Error("createEmbeddingProvider not found in openclaw/plugin-sdk");
+      }
+
+      if (!this.config.openclawConfig) {
+        throw new Error("OpenClaw config not provided for openclaw embedding provider");
+      }
+
+      const result = await createEmbeddingProvider({
+        config: this.config.openclawConfig,
+        provider: "local", // Use local EmbeddingGemma
+        model: "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf",
+        fallback: "openai", // Fallback to OpenAI if local fails
+      });
+
+      this.coreProvider = result.provider as CoreEmbeddingProvider;
+    } catch (error) {
+      this.initError = error instanceof Error ? error : new Error(String(error));
+      throw this.initError;
+    }
+  }
+
+  isAvailable(): boolean {
+    // Optimistically return true; actual availability is checked during embedding
+    return true;
+  }
+
+  async embed(text: string): Promise<EmbeddingVector> {
+    const results = await this.embedBatch([text]);
+    return results[0];
+  }
+
+  async embedBatch(texts: string[]): Promise<EmbeddingVector[]> {
+    await this.ensureInitialized();
+
+    if (!this.coreProvider) {
+      throw new Error("OpenClaw embedding provider not initialized");
+    }
+
+    const vectors = await this.coreProvider.embedBatch(texts);
+
+    return vectors.map((vector) => ({
+      vector,
+      dimensions: vector.length,
+      model: this.coreProvider!.model,
+    }));
+  }
+}
 
 // === OpenAI Provider ===
 
@@ -325,6 +424,9 @@ export class EmbeddingManager {
 
     // 프로바이더 초기화
     switch (this.config.provider) {
+      case "openclaw":
+        this.provider = new OpenClawEmbeddingProvider(this.config);
+        break;
       case "openai":
         this.provider = new OpenAIEmbeddingProvider(this.config);
         break;
