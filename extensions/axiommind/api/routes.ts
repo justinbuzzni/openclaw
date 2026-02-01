@@ -5,7 +5,7 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { MemoryPipeline } from "../memory-pipeline/orchestrator.js";
-import type { EntryType, MemoryStage, DemotionReason } from "../memory-pipeline/types.js";
+import type { EntryType, MemoryStage, DemotionReason, AnyEntry } from "../memory-pipeline/types.js";
 import {
   getAutoScheduler,
   stopAutoScheduler,
@@ -36,6 +36,14 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         if (apiPath === "tasks") {
           return await handleTasks(req, res, pipeline);
         }
+        // Entry CRUD API
+        if (apiPath === "entries") {
+          return await handleListEntries(req, res, url, pipeline);
+        }
+        if (apiPath.startsWith("entries/")) {
+          const entryId = apiPath.replace("entries/", "");
+          return await handleGetEntry(req, res, entryId, pipeline);
+        }
         // Graduation API
         if (apiPath === "graduation/stats") {
           return await handleGraduationStats(req, res, pipeline);
@@ -50,6 +58,22 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         // Scheduler API
         if (apiPath === "scheduler/stats") {
           return await handleSchedulerStats(req, res, pipeline);
+        }
+      }
+
+      // PUT for updates
+      if (req.method === "PUT") {
+        if (apiPath.startsWith("entries/")) {
+          const entryId = apiPath.replace("entries/", "");
+          return await handleUpdateEntry(req, res, entryId, pipeline);
+        }
+      }
+
+      // DELETE for deletions
+      if (req.method === "DELETE") {
+        if (apiPath.startsWith("entries/")) {
+          const entryId = apiPath.replace("entries/", "");
+          return await handleDeleteEntry(req, res, entryId, pipeline);
         }
       }
 
@@ -425,5 +449,106 @@ async function handleSchedulerStop(
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ success: true, message: "Scheduler stopped" }));
+  return true;
+}
+
+// === Entry CRUD Handlers ===
+
+async function handleListEntries(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const limit = parseInt(url.searchParams.get("limit") || "20", 10);
+  const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+  const entryTypes = url.searchParams.getAll("types");
+  const memoryStages = url.searchParams.getAll("stages");
+  const dateFrom = url.searchParams.get("dateFrom") || undefined;
+  const dateTo = url.searchParams.get("dateTo") || undefined;
+  const sortBy = url.searchParams.get("sortBy") || "created_at";
+  const sortOrder = (url.searchParams.get("sortOrder") || "DESC") as "ASC" | "DESC";
+
+  const result = await pipeline.listEntries({
+    limit,
+    offset,
+    entryTypes: entryTypes.length > 0 ? entryTypes : undefined,
+    memoryStages: memoryStages.length > 0 ? memoryStages : undefined,
+    dateFrom,
+    dateTo,
+    sortBy,
+    sortOrder,
+  });
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(result));
+  return true;
+}
+
+async function handleGetEntry(
+  req: IncomingMessage,
+  res: ServerResponse,
+  entryId: string,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const entry = await pipeline.getEntry(entryId);
+
+  if (!entry) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Entry not found" }));
+    return true;
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ entry }));
+  return true;
+}
+
+async function handleUpdateEntry(
+  req: IncomingMessage,
+  res: ServerResponse,
+  entryId: string,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const body = await readBody(req);
+
+  if (!body.title && !body.content) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "At least one of title or content is required" }));
+    return true;
+  }
+
+  const success = await pipeline.updateEntry(entryId, {
+    title: body.title as string | undefined,
+    content: body.content as AnyEntry | undefined,
+  });
+
+  if (!success) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Failed to update entry" }));
+    return true;
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ success: true }));
+  return true;
+}
+
+async function handleDeleteEntry(
+  req: IncomingMessage,
+  res: ServerResponse,
+  entryId: string,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  const success = await pipeline.deleteEntry(entryId);
+
+  if (!success) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Failed to delete entry" }));
+    return true;
+  }
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ success: true }));
   return true;
 }

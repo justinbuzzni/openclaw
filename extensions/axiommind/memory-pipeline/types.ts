@@ -103,6 +103,7 @@ export type SearchResult = {
   content: AnyEntry;
   score: number;
   idrPath?: string;
+  memoryStage?: MemoryStage;
 };
 
 export type SearchOptions = {

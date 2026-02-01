@@ -9,7 +9,17 @@ import {
   isSearchingAtom,
   searchErrorAtom,
 } from "../_stores/memory";
-import { memoryQueries, searchMemory, type SearchParams } from "../_api/queries";
+import {
+  memoryQueries,
+  searchMemory,
+  updateEntry,
+  deleteEntry,
+  promoteEntry,
+  demoteEntry,
+  type SearchParams,
+  type ListEntriesParams,
+  type EntryWithMeta,
+} from "../_api/queries";
 
 export function useMemorySearch() {
   const [searchQuery, setSearchQuery] = useAtom(searchQueryAtom);
@@ -67,4 +77,67 @@ export function usePendingTasks() {
 
 export function useGraduationStats() {
   return useQuery(memoryQueries.graduationStats);
+}
+
+export function useEntries(params: ListEntriesParams = {}) {
+  return useQuery(memoryQueries.entries(params));
+}
+
+export function useEntry(entryId: string) {
+  return useQuery(memoryQueries.entry(entryId));
+}
+
+export function useUpdateEntry() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ entryId, updates }: { entryId: string; updates: { title?: string; content?: Record<string, unknown> } }) =>
+      updateEntry(entryId, updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["memory", "entries"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "entry"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "search"] });
+    },
+  });
+}
+
+export function useDeleteEntry() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (entryId: string) => deleteEntry(entryId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["memory", "entries"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "search"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "graduation", "stats"] });
+    },
+  });
+}
+
+export function usePromoteEntry() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ entryId, targetStage }: { entryId: string; targetStage: string }) =>
+      promoteEntry(entryId, targetStage),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["memory", "entries"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "entry"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "graduation", "stats"] });
+    },
+  });
+}
+
+export function useDemoteEntry() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({ entryId, reason }: { entryId: string; reason?: string }) =>
+      demoteEntry(entryId, reason),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["memory", "entries"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "entry"] });
+      queryClient.invalidateQueries({ queryKey: ["memory", "graduation", "stats"] });
+    },
+  });
 }

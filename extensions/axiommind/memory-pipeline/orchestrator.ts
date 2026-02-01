@@ -609,6 +609,45 @@ export class MemoryPipeline extends EventEmitter {
     }
     return this.similarityChecker.findSimilar(entry, threshold);
   }
+
+  // === Entry CRUD API ===
+
+  /**
+   * 개별 엔트리 조회
+   */
+  async getEntry(entryId: string) {
+    return this.indexer.getEntry(entryId);
+  }
+
+  /**
+   * 엔트리 목록 조회 (페이징)
+   */
+  async listEntries(options: {
+    limit?: number;
+    offset?: number;
+    entryTypes?: string[];
+    memoryStages?: string[];
+    dateFrom?: string;
+    dateTo?: string;
+    sortBy?: string;
+    sortOrder?: "ASC" | "DESC";
+  } = {}) {
+    return this.indexer.listEntries(options);
+  }
+
+  /**
+   * 엔트리 수정
+   */
+  async updateEntry(entryId: string, updates: { title?: string; content?: AnyEntry }) {
+    return this.indexer.updateEntry(entryId, updates);
+  }
+
+  /**
+   * 엔트리 삭제
+   */
+  async deleteEntry(entryId: string) {
+    return this.indexer.deleteEntry(entryId);
+  }
 }
 
 // Re-export types for external use

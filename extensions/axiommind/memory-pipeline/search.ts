@@ -4,7 +4,7 @@
  * 키워드 검색 및 시맨틱 검색 API
  */
 import type { MemoryIndexer, SearchRowResult, DecisionWithEvidence, TaskWithContext } from "./indexer.js";
-import type { SearchResult, SearchOptions, EntryType, AnyEntry } from "./types.js";
+import type { SearchResult, SearchOptions, EntryType, AnyEntry, MemoryStage } from "./types.js";
 
 export class MemorySearch {
   private indexer: MemoryIndexer;
@@ -78,6 +78,7 @@ export class MemorySearch {
       content: content as AnyEntry,
       score: 1.0, // 키워드 검색에서는 고정 점수
       idrPath: row.idr_path as string | undefined,
+      memoryStage: (row.memory_stage as MemoryStage) || "working",
     };
   }
 }

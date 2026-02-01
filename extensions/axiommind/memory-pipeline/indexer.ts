@@ -301,6 +301,186 @@ export class MemoryIndexer {
     return typeof nextId === "number" ? nextId : 1;
   }
 
+  /**
+   * 개별 엔트리 조회
+   */
+  async getEntry(entryId: string): Promise<EntryWithMeta | null> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const query = `
+      SELECT e.*, s.date as session_date, s.title as session_title, s.idr_path
+      FROM entries e
+      JOIN sessions s ON e.session_id = s.id
+      WHERE e.id = ?
+    `;
+
+    const rows = await this.runSelect(query, [entryId]);
+    if (rows.length === 0) return null;
+
+    const row = rows[0];
+    return {
+      id: row.id as string,
+      sessionId: row.session_id as string,
+      entryType: row.entry_type as string,
+      title: row.title as string,
+      content: JSON.parse(row.content as string),
+      textForSearch: row.text_for_search as string,
+      memoryStage: (row.memory_stage as string) || "working",
+      promotedAt: row.promoted_at as string | null,
+      promotionReason: row.promotion_reason as string | null,
+      lastAccessedAt: row.last_accessed_at as string | null,
+      accessCount: (row.access_count as number) || 0,
+      confirmationCount: (row.confirmation_count as number) || 0,
+      createdAt: row.created_at as string,
+      sessionDate: row.session_date as string,
+      sessionTitle: row.session_title as string,
+      idrPath: row.idr_path as string,
+    };
+  }
+
+  /**
+   * 엔트리 목록 조회 (페이징)
+   */
+  async listEntries(options: ListEntriesOptions = {}): Promise<{ entries: EntryWithMeta[]; total: number }> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const {
+      limit = 20,
+      offset = 0,
+      entryTypes,
+      memoryStages,
+      dateFrom,
+      dateTo,
+      sortBy = "created_at",
+      sortOrder = "DESC",
+    } = options;
+
+    let whereConditions: string[] = [];
+    const params: unknown[] = [];
+
+    if (entryTypes && entryTypes.length > 0) {
+      const types = entryTypes.map((t) => `'${t}'`).join(", ");
+      whereConditions.push(`e.entry_type IN (${types})`);
+    }
+
+    if (memoryStages && memoryStages.length > 0) {
+      const stages = memoryStages.map((s) => `'${s}'`).join(", ");
+      whereConditions.push(`COALESCE(e.memory_stage, 'working') IN (${stages})`);
+    }
+
+    if (dateFrom) {
+      whereConditions.push(`s.date >= '${dateFrom}'`);
+    }
+
+    if (dateTo) {
+      whereConditions.push(`s.date <= '${dateTo}'`);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+
+    // 총 개수 조회
+    const countQuery = `
+      SELECT CAST(COUNT(*) AS INTEGER) as total
+      FROM entries e
+      JOIN sessions s ON e.session_id = s.id
+      ${whereClause}
+    `;
+    const countRows = await this.runSelect(countQuery);
+    const total = (countRows[0]?.total as number) || 0;
+
+    // 엔트리 조회
+    const validSortColumns = ["created_at", "title", "entry_type", "memory_stage", "access_count"];
+    const safeSortBy = validSortColumns.includes(sortBy) ? sortBy : "created_at";
+    const safeSortOrder = sortOrder.toUpperCase() === "ASC" ? "ASC" : "DESC";
+
+    const query = `
+      SELECT e.*, s.date as session_date, s.title as session_title, s.idr_path
+      FROM entries e
+      JOIN sessions s ON e.session_id = s.id
+      ${whereClause}
+      ORDER BY e.${safeSortBy} ${safeSortOrder}
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const rows = await this.runSelect(query);
+    const entries: EntryWithMeta[] = rows.map((row) => ({
+      id: row.id as string,
+      sessionId: row.session_id as string,
+      entryType: row.entry_type as string,
+      title: row.title as string,
+      content: JSON.parse(row.content as string),
+      textForSearch: row.text_for_search as string,
+      memoryStage: (row.memory_stage as string) || "working",
+      promotedAt: row.promoted_at as string | null,
+      promotionReason: row.promotion_reason as string | null,
+      lastAccessedAt: row.last_accessed_at as string | null,
+      accessCount: (row.access_count as number) || 0,
+      confirmationCount: (row.confirmation_count as number) || 0,
+      createdAt: row.created_at as string,
+      sessionDate: row.session_date as string,
+      sessionTitle: row.session_title as string,
+      idrPath: row.idr_path as string,
+    }));
+
+    return { entries, total };
+  }
+
+  /**
+   * 엔트리 수정
+   */
+  async updateEntry(entryId: string, updates: EntryUpdates): Promise<boolean> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const setClauses: string[] = [];
+    const params: unknown[] = [];
+
+    if (updates.title !== undefined) {
+      setClauses.push("title = ?");
+      params.push(updates.title);
+    }
+
+    if (updates.content !== undefined) {
+      setClauses.push("content = ?");
+      params.push(JSON.stringify(updates.content));
+
+      // text_for_search도 업데이트
+      const entry = updates.content as AnyEntry;
+      setClauses.push("text_for_search = ?");
+      params.push(this.entryToText(entry));
+    }
+
+    if (setClauses.length === 0) {
+      return false; // 업데이트할 내용 없음
+    }
+
+    params.push(entryId);
+
+    const query = `
+      UPDATE entries
+      SET ${setClauses.join(", ")}
+      WHERE id = ?
+    `;
+
+    await this.runQuery(query, params);
+    return true;
+  }
+
+  /**
+   * 엔트리 삭제
+   */
+  async deleteEntry(entryId: string): Promise<boolean> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    // 먼저 관련된 promotion_history와 conflicts 삭제
+    await this.runQuery("DELETE FROM promotion_history WHERE entry_id = ?", [entryId]);
+    await this.runQuery("DELETE FROM conflicts WHERE entry_id_1 = ? OR entry_id_2 = ?", [entryId, entryId]);
+
+    // 엔트리 삭제
+    await this.runQuery("DELETE FROM entries WHERE id = ?", [entryId]);
+
+    return true;
+  }
+
   private entryToText(entry: AnyEntry): string {
     switch (entry.type) {
       case "fact":
@@ -386,4 +566,39 @@ type TaskWithContext = {
   session: string;
 };
 
-export type { SearchRowResult, DecisionWithEvidence, TaskWithContext };
+type EntryWithMeta = {
+  id: string;
+  sessionId: string;
+  entryType: string;
+  title: string;
+  content: AnyEntry;
+  textForSearch: string;
+  memoryStage: string;
+  promotedAt: string | null;
+  promotionReason: string | null;
+  lastAccessedAt: string | null;
+  accessCount: number;
+  confirmationCount: number;
+  createdAt: string;
+  sessionDate: string;
+  sessionTitle: string;
+  idrPath: string;
+};
+
+type ListEntriesOptions = {
+  limit?: number;
+  offset?: number;
+  entryTypes?: string[];
+  memoryStages?: string[];
+  dateFrom?: string;
+  dateTo?: string;
+  sortBy?: string;
+  sortOrder?: "ASC" | "DESC";
+};
+
+type EntryUpdates = {
+  title?: string;
+  content?: AnyEntry;
+};
+
+export type { SearchRowResult, DecisionWithEvidence, TaskWithContext, EntryWithMeta, ListEntriesOptions, EntryUpdates };
