@@ -112,8 +112,15 @@ function extractTextFromContent(content: unknown): string {
 // 기본 토큰 (개발용 - 실제로는 URL 파라미터나 설정에서 가져와야 함)
 const DEFAULT_DEV_TOKEN = "58a362bc29faaeff7c11422bcfeb79c4";
 
+// 현재 페이지 host 기반으로 WebSocket URL 생성 (origin 불일치 방지)
+function getDefaultWsUrl(): string {
+  if (typeof window === "undefined") return "ws://localhost:18789/";
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/`;
+}
+
 export function useGateway(options: UseGatewayOptions = {}) {
-  const { url = "ws://localhost:18789/", autoConnect = true } = options;
+  const { url = getDefaultWsUrl(), autoConnect = true } = options;
   const token = options.token || getTokenFromUrl() || DEFAULT_DEV_TOKEN;
 
   // sessionKey를 즉시 계산 (useEffect 대신)
@@ -136,6 +143,9 @@ export function useGateway(options: UseGatewayOptions = {}) {
   const pendingRequests = useRef<
     Map<string, { resolve: (value: any) => void; reject: (err: any) => void }>
   >(new Map());
+
+  // Track if connect was sent (prevent double sends)
+  const connectSentRef = useRef(false);
 
   // sessionKey를 ref로도 저장 (콜백에서 최신값 접근용)
   const sessionKeyRef = useRef(initialSessionKey);
@@ -279,7 +289,13 @@ export function useGateway(options: UseGatewayOptions = {}) {
     handleAgentEventRef.current = handleAgentEvent;
   }, [handleChatEvent, handleAgentEvent]);
 
-  const sendConnect = useCallback(async () => {
+  // sendConnect를 ref로 저장하여 onmessage에서 호출 가능하게 함
+  const sendConnectRef = useRef<() => Promise<void>>(() => Promise.resolve());
+
+  const doSendConnect = useCallback(async () => {
+    if (connectSentRef.current) return;
+    connectSentRef.current = true;
+
     const params: ConnectParams = {
       minProtocol: 3,
       maxProtocol: 3,
@@ -310,10 +326,18 @@ export function useGateway(options: UseGatewayOptions = {}) {
     }
   }, [token, sendRequest, setConnectionStatus, fetchHistory]);
 
+  // Update ref when callback changes
+  useEffect(() => {
+    sendConnectRef.current = doSendConnect;
+  }, [doSendConnect]);
+
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
+
+    // Reset connect state
+    connectSentRef.current = false;
 
     setConnectionStatus("connecting");
 
@@ -322,8 +346,8 @@ export function useGateway(options: UseGatewayOptions = {}) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log("WebSocket opened, sending connect...");
-        sendConnect();
+        console.log("WebSocket opened, waiting for challenge...");
+        // Don't send connect immediately - wait for challenge
       };
 
       ws.onmessage = (event) => {
@@ -346,6 +370,12 @@ export function useGateway(options: UseGatewayOptions = {}) {
           // 이벤트 처리
           if (data.type === "event") {
             switch (data.event) {
+              case "connect.challenge": {
+                // Gateway sends challenge - respond with connect (nonce only used for device auth)
+                console.log("Received challenge, sending connect...");
+                sendConnectRef.current();
+                break;
+              }
               case "chat":
                 handleChatEventRef.current(data.payload);
                 break;
@@ -391,7 +421,7 @@ export function useGateway(options: UseGatewayOptions = {}) {
       console.error("Failed to connect:", error);
       setConnectionStatus("disconnected");
     }
-  }, [url, autoConnect, setConnectionStatus, sendConnect]);
+  }, [url, autoConnect, setConnectionStatus]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
