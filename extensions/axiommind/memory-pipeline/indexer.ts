@@ -563,6 +563,61 @@ export class MemoryIndexer {
     }));
   }
 
+  /**
+   * 세션 목록 조회 (페이징)
+   */
+  async listSessions(options: ListSessionsOptions = {}): Promise<{ sessions: SessionSummary[]; total: number }> {
+    if (!this.db) throw new Error("Database not initialized");
+
+    const { limit = 50, offset = 0, dateFrom, dateTo } = options;
+
+    const whereConditions: string[] = [];
+    if (dateFrom) {
+      whereConditions.push(`s.date >= '${dateFrom}'`);
+    }
+    if (dateTo) {
+      whereConditions.push(`s.date <= '${dateTo}'`);
+    }
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+
+    // 총 개수 조회
+    const countQuery = `SELECT COUNT(*) as total FROM sessions s ${whereClause}`;
+    const countRow = this.db.prepare(countQuery).get() as { total: number };
+    const total = countRow?.total || 0;
+
+    // 세션 목록 조회 (엔트리 수 포함)
+    const query = `
+      SELECT
+        s.id,
+        s.date,
+        s.session_id,
+        s.title,
+        s.time_range,
+        s.compile_status,
+        s.created_at,
+        (SELECT COUNT(*) FROM entries e WHERE e.session_id = s.id) as entry_count
+      FROM sessions s
+      ${whereClause}
+      ORDER BY s.date DESC, s.session_id DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const rows = this.db.prepare(query).all() as Record<string, unknown>[];
+    const sessions: SessionSummary[] = rows.map((row) => ({
+      id: row.id as string,
+      date: row.date as string,
+      sessionId: row.session_id as number,
+      title: row.title as string,
+      timeRange: row.time_range as string | null,
+      compileStatus: row.compile_status as string,
+      createdAt: row.created_at as string,
+      entryCount: (row.entry_count as number) || 0,
+    }));
+
+    return { sessions, total };
+  }
+
   async close(): Promise<void> {
     if (this.db) {
       this.db.close();
@@ -629,4 +684,22 @@ type EntryUpdates = {
   content?: AnyEntry;
 };
 
-export type { SearchRowResult, DecisionWithEvidence, TaskWithContext, EntryWithMeta, ListEntriesOptions, EntryUpdates };
+type ListSessionsOptions = {
+  limit?: number;
+  offset?: number;
+  dateFrom?: string;
+  dateTo?: string;
+};
+
+type SessionSummary = {
+  id: string;
+  date: string;
+  sessionId: number;
+  title: string;
+  timeRange: string | null;
+  compileStatus: string;
+  createdAt: string;
+  entryCount: number;
+};
+
+export type { SearchRowResult, DecisionWithEvidence, TaskWithContext, EntryWithMeta, ListEntriesOptions, EntryUpdates, ListSessionsOptions, SessionSummary };

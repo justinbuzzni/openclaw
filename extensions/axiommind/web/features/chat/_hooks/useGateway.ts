@@ -494,6 +494,57 @@ export function useGateway(options: UseGatewayOptions = {}) {
     };
   }, [autoConnect, connect, disconnect]);
 
+  // 세션 전환
+  const switchSession = useCallback(
+    async (newSessionKey: string) => {
+      // 1. URL 파라미터 업데이트
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        url.searchParams.set("session", newSessionKey);
+        window.history.pushState({}, "", url.toString());
+      }
+
+      // 2. 상태 업데이트
+      setSessionKey(newSessionKey);
+      sessionKeyRef.current = newSessionKey;
+
+      // 3. 세션 히스토리 로드
+      // UUID 형식인지 확인 (예: agent:axiommind:73571139-e1a1-4351-ac97-6c99fcb9c8b7)
+      const sessionId = newSessionKey.split(":").pop() || "";
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId);
+
+      if (isUuid) {
+        // JSONL 파일에서 직접 히스토리 로드
+        try {
+          const response = await fetch(`/ax/api/sessions/${sessionId}`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.messages && data.messages.length > 0) {
+              loadHistory({
+                messages: data.messages,
+                thinkingLevel: null,
+              });
+              return;
+            }
+          }
+        } catch (error) {
+          console.error("Failed to load session from JSONL:", error);
+        }
+      }
+
+      // 기존 방식으로 히스토리 로드 (게이트웨이 API)
+      await fetchHistory();
+    },
+    [setSessionKey, fetchHistory, loadHistory]
+  );
+
+  // 새 세션 생성
+  const createNewSession = useCallback(() => {
+    const timestamp = Date.now();
+    const newSessionKey = `agent:axiommind:new-${timestamp}`;
+    switchSession(newSessionKey);
+  }, [switchSession]);
+
   return {
     connectionStatus,
     connected: connectionStatus === "connected",
@@ -503,5 +554,7 @@ export function useGateway(options: UseGatewayOptions = {}) {
     send,
     abort,
     refetchHistory: fetchHistory,
+    switchSession,
+    createNewSession,
   };
 }

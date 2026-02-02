@@ -4,6 +4,10 @@
  * AxiomMind REST API 핸들러
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as readline from "node:readline";
 import type { MemoryPipeline } from "../memory-pipeline/orchestrator.js";
 import type { EntryType, MemoryStage, DemotionReason, AnyEntry } from "../memory-pipeline/types.js";
 import {
@@ -72,6 +76,14 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         }
         if (apiPath === "dashboard/activity") {
           return await handleRecentActivity(req, res, url, pipeline);
+        }
+        // Sessions API
+        if (apiPath === "sessions") {
+          return await handleListSessions(req, res, url, pipeline);
+        }
+        if (apiPath.startsWith("sessions/") && apiPath.split("/").length === 2) {
+          const sessionId = apiPath.replace("sessions/", "");
+          return await handleGetSession(req, res, sessionId, pipeline);
         }
       }
 
@@ -651,5 +663,249 @@ async function handleRecentActivity(
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ activities: history }));
+  return true;
+}
+
+// === Sessions API Handlers ===
+
+type ChatSessionSummary = {
+  id: string;
+  date: string;
+  sessionId: number;
+  title: string;
+  timeRange: string | null;
+  compileStatus: string;
+  createdAt: string;
+  entryCount: number;
+};
+
+/**
+ * JSONL 세션 파일에서 메타데이터 읽기
+ */
+async function readSessionMetadata(filePath: string): Promise<{
+  id: string;
+  timestamp: string;
+  messageCount: number;
+  firstMessage?: string;
+} | null> {
+  try {
+    const fileStream = fs.createReadStream(filePath);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity,
+    });
+
+    let sessionMeta: { id: string; timestamp: string } | null = null;
+    let messageCount = 0;
+    let firstUserMessage: string | undefined;
+
+    for await (const line of rl) {
+      try {
+        const entry = JSON.parse(line);
+
+        // 첫 줄은 세션 메타데이터
+        if (entry.type === "session") {
+          sessionMeta = {
+            id: entry.id,
+            timestamp: entry.timestamp,
+          };
+        }
+
+        // 메시지 카운트
+        if (entry.type === "message") {
+          messageCount++;
+          // 첫 번째 사용자 메시지 찾기 (제목용)
+          if (!firstUserMessage && entry.message?.role === "user") {
+            const content = entry.message.content;
+            if (Array.isArray(content)) {
+              const textBlock = content.find((b: any) => b.type === "text");
+              if (textBlock?.text) {
+                // Memory Tools 프롬프트 제거하고 실제 메시지만 추출
+                let text = textBlock.text as string;
+                if (text.includes("[message_id:")) {
+                  // [message_id: xxx] 이후의 텍스트는 제거
+                  text = text.split("[message_id:")[0].trim();
+                }
+                // Memory Tools Available 섹션 이후의 실제 메시지 추출
+                if (text.includes("## Memory Tools Available")) {
+                  const parts = text.split(/\n\n+/);
+                  // 마지막 non-empty 파트가 실제 메시지
+                  for (let i = parts.length - 1; i >= 0; i--) {
+                    const part = parts[i].trim();
+                    if (part && !part.startsWith("##") && !part.startsWith("-") && !part.startsWith("A new session")) {
+                      firstUserMessage = part.slice(0, 100);
+                      break;
+                    }
+                  }
+                } else {
+                  firstUserMessage = text.slice(0, 100);
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // JSON 파싱 오류 무시
+      }
+    }
+
+    if (!sessionMeta) return null;
+
+    return {
+      ...sessionMeta,
+      messageCount,
+      firstMessage: firstUserMessage,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 채팅 세션 목록 조회 (JSONL 파일 기반)
+ */
+async function listChatSessions(options: {
+  limit?: number;
+  offset?: number;
+  agentId?: string;
+}): Promise<{ sessions: ChatSessionSummary[]; total: number }> {
+  const { limit = 50, offset = 0, agentId = "axiommind" } = options;
+
+  // 세션 디렉토리 경로
+  const homeDir = os.homedir();
+  const sessionsDir = path.join(homeDir, ".openclaw", "agents", agentId, "sessions");
+
+  if (!fs.existsSync(sessionsDir)) {
+    return { sessions: [], total: 0 };
+  }
+
+  // JSONL 파일 목록
+  const files = fs.readdirSync(sessionsDir)
+    .filter(f => f.endsWith(".jsonl"))
+    .map(f => ({
+      name: f,
+      path: path.join(sessionsDir, f),
+      mtime: fs.statSync(path.join(sessionsDir, f)).mtime,
+    }))
+    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()); // 최신순
+
+  const total = files.length;
+  const paginatedFiles = files.slice(offset, offset + limit);
+
+  // 각 파일에서 메타데이터 읽기
+  const sessions: ChatSessionSummary[] = [];
+  let sessionIdx = offset + 1;
+
+  for (const file of paginatedFiles) {
+    const meta = await readSessionMetadata(file.path);
+    if (meta) {
+      const date = new Date(meta.timestamp);
+      sessions.push({
+        id: meta.id,
+        date: date.toISOString().split("T")[0],
+        sessionId: sessionIdx,
+        title: meta.firstMessage || `Session ${sessionIdx}`,
+        timeRange: date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+        compileStatus: "active",
+        createdAt: meta.timestamp,
+        entryCount: meta.messageCount,
+      });
+    }
+    sessionIdx++;
+  }
+
+  return { sessions, total };
+}
+
+async function handleListSessions(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  _pipeline: MemoryPipeline
+): Promise<boolean> {
+  const limit = parseInt(url.searchParams.get("limit") || "50", 10);
+  const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+
+  // JSONL 파일 기반 세션 목록 조회
+  const result = await listChatSessions({ limit, offset });
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(result));
+  return true;
+}
+
+/**
+ * JSONL 세션 파일에서 메시지 히스토리 읽기
+ */
+async function readSessionMessages(filePath: string): Promise<Array<{
+  id: string;
+  role: string;
+  content: Array<{ type: string; text?: string }>;
+  timestamp: number;
+}>> {
+  const messages: Array<{
+    id: string;
+    role: string;
+    content: Array<{ type: string; text?: string }>;
+    timestamp: number;
+  }> = [];
+
+  try {
+    const fileStream = fs.createReadStream(filePath);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      try {
+        const entry = JSON.parse(line);
+
+        // 메시지 엔트리만 추출
+        if (entry.type === "message" && entry.message) {
+          const msg = entry.message;
+          messages.push({
+            id: entry.id,
+            role: msg.role,
+            content: msg.content,
+            timestamp: msg.timestamp || new Date(entry.timestamp).getTime(),
+          });
+        }
+      } catch {
+        // JSON 파싱 오류 무시
+      }
+    }
+  } catch {
+    // 파일 읽기 오류 무시
+  }
+
+  return messages;
+}
+
+async function handleGetSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  sessionId: string,
+  _pipeline: MemoryPipeline
+): Promise<boolean> {
+  // 세션 파일 경로
+  const homeDir = os.homedir();
+  const sessionPath = path.join(homeDir, ".openclaw", "agents", "axiommind", "sessions", `${sessionId}.jsonl`);
+
+  if (!fs.existsSync(sessionPath)) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Session not found" }));
+    return true;
+  }
+
+  // 세션 파일에서 메시지 히스토리 읽기
+  const messages = await readSessionMessages(sessionPath);
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({
+    sessionId,
+    messages,
+    count: messages.length,
+  }));
   return true;
 }
