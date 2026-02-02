@@ -4,7 +4,7 @@
  * 메모리 엔트리 간 충돌을 감지하고 해결
  */
 
-import type * as duckdb from "duckdb";
+import type { Database } from "better-sqlite3";
 import type { AnyEntry, Conflict, ConflictType } from "./types.js";
 
 // 충돌 해결 결과
@@ -23,9 +23,9 @@ export interface SimilarityResult {
 }
 
 export class ConflictResolver {
-  private db: duckdb.Database;
+  private db: Database;
 
-  constructor(db: duckdb.Database) {
+  constructor(db: Database) {
     this.db = db;
   }
 
@@ -55,7 +55,7 @@ export class ConflictResolver {
         conflicts.push(conflict);
 
         // DB에 충돌 기록
-        await this.recordConflict(conflict);
+        this.recordConflict(conflict);
       }
     }
 
@@ -177,26 +177,20 @@ export class ConflictResolver {
   /**
    * 충돌 해결 기록
    */
-  async resolveConflict(
+  resolveConflict(
     conflictId: string,
     resolution: string,
     keepEntryId?: string
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(
+  ): void {
+    this.db
+      .prepare(
         `
         UPDATE conflicts
-        SET resolved_at = now(), resolution = ?
+        SET resolved_at = datetime('now'), resolution = ?
         WHERE id = ?
-      `,
-        resolution,
-        conflictId,
-        (err: Error | null) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+      `
+      )
+      .run(resolution, conflictId);
   }
 
   /**
@@ -206,16 +200,17 @@ export class ConflictResolver {
     const results: SimilarityResult[] = [];
 
     // 같은 타입의 엔트리만 검색
-    const rows = await this.runSelect(
+    const rows = this.db
+      .prepare(
+        `
+        SELECT id, content, title
+        FROM entries
+        WHERE entry_type = ?
+        ORDER BY created_at DESC
+        LIMIT 100
       `
-      SELECT id, content, title
-      FROM entries
-      WHERE entry_type = ?
-      ORDER BY created_at DESC
-      LIMIT 100
-    `,
-      [entry.type]
-    );
+      )
+      .all(entry.type) as Array<Record<string, unknown>>;
 
     const entryText = this.entryToText(entry);
 
@@ -275,36 +270,37 @@ export class ConflictResolver {
   /**
    * 충돌 기록
    */
-  private async recordConflict(conflict: Conflict): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(
+  private recordConflict(conflict: Conflict): void {
+    this.db
+      .prepare(
         `
         INSERT INTO conflicts (id, entry_id_1, entry_id_2, conflict_type, detected_at)
         VALUES (?, ?, ?, ?, ?)
-      `,
+      `
+      )
+      .run(
         conflict.id,
         conflict.entryId1,
         conflict.entryId2,
         conflict.conflictType,
-        conflict.detectedAt,
-        (err: Error | null) => {
-          if (err) reject(err);
-          else resolve();
-        }
+        conflict.detectedAt
       );
-    });
   }
 
   /**
    * 미해결 충돌 목록 조회
    */
-  async getUnresolvedConflicts(): Promise<Conflict[]> {
-    const rows = await this.runSelect(`
-      SELECT id, entry_id_1, entry_id_2, conflict_type, detected_at
-      FROM conflicts
-      WHERE resolved_at IS NULL
-      ORDER BY detected_at DESC
-    `);
+  getUnresolvedConflicts(): Conflict[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT id, entry_id_1, entry_id_2, conflict_type, detected_at
+        FROM conflicts
+        WHERE resolved_at IS NULL
+        ORDER BY detected_at DESC
+      `
+      )
+      .all() as Array<Record<string, unknown>>;
 
     return rows.map((row) => ({
       id: row.id as string,
@@ -313,14 +309,5 @@ export class ConflictResolver {
       conflictType: row.conflict_type as ConflictType,
       detectedAt: row.detected_at as string,
     }));
-  }
-
-  private runSelect(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    return new Promise((resolve, reject) => {
-      this.db.all(sql, ...params, (err: Error | null, rows: Record<string, unknown>[]) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
   }
 }

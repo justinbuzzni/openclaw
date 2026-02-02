@@ -53,9 +53,11 @@ const plugin = {
         const db = pipeline.indexer?.getDatabase?.();
         if (db) {
           graphManager = new MemoryGraphManager(db);
-          graphManager.initialize().catch((err) => {
+          try {
+            graphManager.initialize();
+          } catch (err) {
             logger.warn(`Graph initialization failed: ${err}`);
-          });
+          }
           messageHandler.setGraphManager(graphManager);
         }
 
@@ -178,14 +180,19 @@ const plugin = {
     // 6. HTTP 핸들러 등록 (인증 + prefix-based matching)
     const checkAuth = createAuthChecker(api);
 
+    logger.info("Registering HTTP handler for /ax routes");
     api.registerHttpHandler(async (req: IncomingMessage, res: ServerResponse) => {
       const url = new URL(req.url || "/", `http://${req.headers.host}`);
       const pathname = url.pathname;
+
+      logger.debug(`[HTTP] ${req.method} ${pathname}`);
 
       // /ax 경로가 아니면 처리하지 않음
       if (!pathname.startsWith("/ax")) {
         return false;
       }
+
+      logger.info(`[HTTP] Handling /ax route: ${pathname}`);
 
       // 인증 체크
       const authResult = checkAuth(req, url);

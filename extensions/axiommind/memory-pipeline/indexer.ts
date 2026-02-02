@@ -1,136 +1,131 @@
 /**
  * Memory Indexer
  *
- * DuckDB를 사용하여 세션과 엔트리를 인덱싱
- * 벡터 검색을 위한 임베딩 저장
+ * SQLite (better-sqlite3)를 사용하여 세션과 엔트리를 인덱싱
+ * WAL 모드로 동시 접근 지원
  */
-import * as duckdb from "duckdb";
+import Database from "better-sqlite3";
+import type { Database as DatabaseType } from "better-sqlite3";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { Session, AnyEntry, CompileStatus } from "./types.js";
 
 export class MemoryIndexer {
-  private db: duckdb.Database | null = null;
+  private db: DatabaseType | null = null;
   private dbPath: string;
   private dataDir: string;
 
   constructor(dataDir: string) {
     this.dataDir = dataDir;
-    this.dbPath = path.join(dataDir, "data", "memory.duckdb");
+    this.dbPath = path.join(dataDir, "data", "memory.sqlite");
   }
 
   async initialize(): Promise<void> {
     // 데이터 디렉토리 생성
     await fs.mkdir(path.join(this.dataDir, "data"), { recursive: true });
 
-    // DuckDB 연결
-    this.db = new duckdb.Database(this.dbPath);
+    // SQLite 연결 (WAL 모드로 동시 접근 지원)
+    this.db = new Database(this.dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000"); // 5초 대기
 
     // 스키마 초기화
-    await this.initSchema();
+    this.initSchema();
 
     // 기존 DB 마이그레이션 (새 컬럼 추가)
-    await this.migrateSchema();
+    this.migrateSchema();
   }
 
-  private async initSchema(): Promise<void> {
+  private initSchema(): void {
     if (!this.db) throw new Error("Database not initialized");
 
-    return new Promise((resolve, reject) => {
-      this.db!.run(
-        `
-        -- Sessions 테이블
-        CREATE TABLE IF NOT EXISTS sessions (
-          id VARCHAR PRIMARY KEY,
-          date DATE NOT NULL,
-          session_id INTEGER NOT NULL,
-          time_range VARCHAR,
-          title VARCHAR NOT NULL,
-          idr_path VARCHAR NOT NULL,
-          compiled_at TIMESTAMP,
-          compile_status VARCHAR DEFAULT 'pending',
-          created_at TIMESTAMP DEFAULT now(),
-          UNIQUE(date, session_id)
-        );
-
-        -- Entries 테이블 (Graduation Pipeline 지원)
-        CREATE TABLE IF NOT EXISTS entries (
-          id VARCHAR PRIMARY KEY,
-          session_id VARCHAR,
-          entry_type VARCHAR NOT NULL,
-          title VARCHAR NOT NULL,
-          content JSON,
-          text_for_search VARCHAR,
-          -- Graduation Pipeline 컬럼
-          memory_stage VARCHAR DEFAULT 'working',
-          promoted_at TIMESTAMP,
-          promotion_reason VARCHAR,
-          last_accessed_at TIMESTAMP,
-          access_count INTEGER DEFAULT 0,
-          confirmation_count INTEGER DEFAULT 0,
-          created_at TIMESTAMP DEFAULT now(),
-          FOREIGN KEY (session_id) REFERENCES sessions(id)
-        );
-
-        -- 승격 이력 테이블
-        CREATE TABLE IF NOT EXISTS promotion_history (
-          id VARCHAR PRIMARY KEY,
-          entry_id VARCHAR,
-          from_stage VARCHAR NOT NULL,
-          to_stage VARCHAR NOT NULL,
-          reason VARCHAR,
-          promoted_at TIMESTAMP DEFAULT now(),
-          FOREIGN KEY (entry_id) REFERENCES entries(id)
-        );
-
-        -- 충돌 기록 테이블
-        CREATE TABLE IF NOT EXISTS conflicts (
-          id VARCHAR PRIMARY KEY,
-          entry_id_1 VARCHAR,
-          entry_id_2 VARCHAR,
-          conflict_type VARCHAR NOT NULL,
-          detected_at TIMESTAMP DEFAULT now(),
-          resolved_at TIMESTAMP,
-          resolution VARCHAR,
-          FOREIGN KEY (entry_id_1) REFERENCES entries(id),
-          FOREIGN KEY (entry_id_2) REFERENCES entries(id)
-        );
-
-        -- 인덱스
-        CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
-        CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);
-        CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(memory_stage);
-        CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
-        CREATE INDEX IF NOT EXISTS idx_promotion_history_entry ON promotion_history(entry_id);
-        CREATE INDEX IF NOT EXISTS idx_conflicts_entries ON conflicts(entry_id_1, entry_id_2);
-      `,
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
+    this.db.exec(`
+      -- Sessions 테이블
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        date TEXT NOT NULL,
+        session_id INTEGER NOT NULL,
+        time_range TEXT,
+        title TEXT NOT NULL,
+        idr_path TEXT NOT NULL,
+        compiled_at TEXT,
+        compile_status TEXT DEFAULT 'pending',
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(date, session_id)
       );
-    });
+
+      -- Entries 테이블 (Graduation Pipeline 지원)
+      CREATE TABLE IF NOT EXISTS entries (
+        id TEXT PRIMARY KEY,
+        session_id TEXT,
+        entry_type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        content TEXT,
+        text_for_search TEXT,
+        -- Graduation Pipeline 컬럼
+        memory_stage TEXT DEFAULT 'working',
+        promoted_at TEXT,
+        promotion_reason TEXT,
+        last_accessed_at TEXT,
+        access_count INTEGER DEFAULT 0,
+        confirmation_count INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+      );
+
+      -- 승격 이력 테이블
+      CREATE TABLE IF NOT EXISTS promotion_history (
+        id TEXT PRIMARY KEY,
+        entry_id TEXT,
+        from_stage TEXT NOT NULL,
+        to_stage TEXT NOT NULL,
+        reason TEXT,
+        promoted_at TEXT DEFAULT (datetime('now')),
+        FOREIGN KEY (entry_id) REFERENCES entries(id)
+      );
+
+      -- 충돌 기록 테이블
+      CREATE TABLE IF NOT EXISTS conflicts (
+        id TEXT PRIMARY KEY,
+        entry_id_1 TEXT,
+        entry_id_2 TEXT,
+        conflict_type TEXT NOT NULL,
+        detected_at TEXT DEFAULT (datetime('now')),
+        resolved_at TEXT,
+        resolution TEXT,
+        FOREIGN KEY (entry_id_1) REFERENCES entries(id),
+        FOREIGN KEY (entry_id_2) REFERENCES entries(id)
+      );
+
+      -- 인덱스
+      CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
+      CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);
+      CREATE INDEX IF NOT EXISTS idx_entries_stage ON entries(memory_stage);
+      CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
+      CREATE INDEX IF NOT EXISTS idx_promotion_history_entry ON promotion_history(entry_id);
+      CREATE INDEX IF NOT EXISTS idx_conflicts_entries ON conflicts(entry_id_1, entry_id_2);
+    `);
   }
 
   /**
    * 기존 DB 마이그레이션 (memory_stage 컬럼 추가)
    */
-  async migrateSchema(): Promise<void> {
+  private migrateSchema(): void {
     if (!this.db) throw new Error("Database not initialized");
 
     // 기존 entries 테이블에 새 컬럼이 없으면 추가
     const columns = [
-      { name: "memory_stage", type: "VARCHAR DEFAULT 'working'" },
-      { name: "promoted_at", type: "TIMESTAMP" },
-      { name: "promotion_reason", type: "VARCHAR" },
-      { name: "last_accessed_at", type: "TIMESTAMP" },
+      { name: "memory_stage", type: "TEXT DEFAULT 'working'" },
+      { name: "promoted_at", type: "TEXT" },
+      { name: "promotion_reason", type: "TEXT" },
+      { name: "last_accessed_at", type: "TEXT" },
       { name: "access_count", type: "INTEGER DEFAULT 0" },
       { name: "confirmation_count", type: "INTEGER DEFAULT 0" },
     ];
 
     for (const col of columns) {
       try {
-        await this.runQuery(`ALTER TABLE entries ADD COLUMN ${col.name} ${col.type}`);
+        this.db.exec(`ALTER TABLE entries ADD COLUMN ${col.name} ${col.type}`);
       } catch {
         // 컬럼이 이미 존재하면 무시
       }
@@ -143,42 +138,38 @@ export class MemoryIndexer {
     const sessionId = `${data.date}_${String(data.sessionId).padStart(2, "0")}`;
 
     // 1. 세션 메타데이터 저장
-    await this.runQuery(
-      `
+    const insertSession = this.db.prepare(`
       INSERT INTO sessions
       (id, date, session_id, time_range, title, idr_path, compile_status, compiled_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, now())
+      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT (id) DO UPDATE SET
-        time_range = EXCLUDED.time_range,
-        title = EXCLUDED.title,
-        idr_path = EXCLUDED.idr_path,
-        compile_status = EXCLUDED.compile_status,
-        compiled_at = now()
-    `,
-      [sessionId, data.date, data.sessionId, data.timeRange, data.title, idrPath, compileStatus]
-    );
+        time_range = excluded.time_range,
+        title = excluded.title,
+        idr_path = excluded.idr_path,
+        compile_status = excluded.compile_status,
+        compiled_at = datetime('now')
+    `);
+    insertSession.run(sessionId, data.date, data.sessionId, data.timeRange, data.title, idrPath, compileStatus);
 
     // 2. 엔트리 인덱싱
+    const insertEntry = this.db.prepare(`
+      INSERT INTO entries
+      (id, session_id, entry_type, title, content, text_for_search)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET
+        session_id = excluded.session_id,
+        entry_type = excluded.entry_type,
+        title = excluded.title,
+        content = excluded.content,
+        text_for_search = excluded.text_for_search
+    `);
+
     for (let i = 0; i < data.entries.length; i++) {
       const entry = data.entries[i];
       const entryId = `${sessionId}_${String(i).padStart(3, "0")}`;
       const textForSearch = this.entryToText(entry);
       const title = this.getEntryTitle(entry);
-
-      await this.runQuery(
-        `
-        INSERT INTO entries
-        (id, session_id, entry_type, title, content, text_for_search)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (id) DO UPDATE SET
-          session_id = EXCLUDED.session_id,
-          entry_type = EXCLUDED.entry_type,
-          title = EXCLUDED.title,
-          content = EXCLUDED.content,
-          text_for_search = EXCLUDED.text_for_search
-      `,
-        [entryId, sessionId, entry.type, title, JSON.stringify(entry), textForSearch]
-      );
+      insertEntry.run(entryId, sessionId, entry.type, title, JSON.stringify(entry), textForSearch);
     }
   }
 
@@ -198,7 +189,7 @@ export class MemoryIndexer {
     }
 
     const keywordConditions = keywords
-      .map((kw) => `(e.title ILIKE '%${kw}%' OR e.text_for_search ILIKE '%${kw}%')`)
+      .map((kw) => `(e.title LIKE '%${kw}%' COLLATE NOCASE OR e.text_for_search LIKE '%${kw}%' COLLATE NOCASE)`)
       .join(" OR ");
 
     const query = `
@@ -212,7 +203,7 @@ export class MemoryIndexer {
       LIMIT 20
     `;
 
-    return this.runSelect(query);
+    return this.db.prepare(query).all() as SearchRowResult[];
   }
 
   async getDecisionsWithEvidence(dateFrom?: string): Promise<DecisionWithEvidence[]> {
@@ -229,7 +220,7 @@ export class MemoryIndexer {
       ORDER BY s.date DESC
     `;
 
-    const decisions = await this.runSelect(query);
+    const decisions = this.db.prepare(query).all() as Record<string, unknown>[];
     const results: DecisionWithEvidence[] = [];
 
     for (const d of decisions) {
@@ -244,7 +235,7 @@ export class MemoryIndexer {
           SELECT content FROM entries
           WHERE entry_type = 'fact' AND title IN (${factTitles})
         `;
-        const factRows = await this.runSelect(factQuery);
+        const factRows = this.db.prepare(factQuery).all() as Record<string, unknown>[];
         for (const f of factRows) {
           facts.push(JSON.parse(f.content as string));
         }
@@ -269,9 +260,9 @@ export class MemoryIndexer {
       FROM entries e
       JOIN sessions s ON e.session_id = s.id
       WHERE e.entry_type = 'task'
-        AND json_extract_string(e.content, '$.status') IN ('pending', 'in_progress', 'blocked')
+        AND json_extract(e.content, '$.status') IN ('pending', 'in_progress', 'blocked')
       ORDER BY
-        CASE json_extract_string(e.content, '$.priority')
+        CASE json_extract(e.content, '$.priority')
           WHEN 'critical' THEN 1
           WHEN 'high' THEN 2
           WHEN 'medium' THEN 3
@@ -280,7 +271,7 @@ export class MemoryIndexer {
         s.date DESC
     `;
 
-    const rows = await this.runSelect(query);
+    const rows = this.db.prepare(query).all() as Record<string, unknown>[];
     return rows.map((r) => ({
       task: JSON.parse(r.content as string),
       date: r.date as string,
@@ -292,13 +283,12 @@ export class MemoryIndexer {
     if (!this.db) throw new Error("Database not initialized");
 
     const query = `
-      SELECT CAST(COALESCE(MAX(session_id), 0) + 1 AS INTEGER) as next_id
+      SELECT COALESCE(MAX(session_id), 0) + 1 as next_id
       FROM sessions WHERE date = ?
     `;
 
-    const rows = await this.runSelect(query, [date]);
-    const nextId = rows[0]?.next_id;
-    return typeof nextId === "number" ? nextId : 1;
+    const row = this.db.prepare(query).get(date) as { next_id: number } | undefined;
+    return row?.next_id || 1;
   }
 
   /**
@@ -314,10 +304,9 @@ export class MemoryIndexer {
       WHERE e.id = ?
     `;
 
-    const rows = await this.runSelect(query, [entryId]);
-    if (rows.length === 0) return null;
+    const row = this.db.prepare(query).get(entryId) as Record<string, unknown> | undefined;
+    if (!row) return null;
 
-    const row = rows[0];
     return {
       id: row.id as string,
       sessionId: row.session_id as string,
@@ -355,8 +344,7 @@ export class MemoryIndexer {
       sortOrder = "DESC",
     } = options;
 
-    let whereConditions: string[] = [];
-    const params: unknown[] = [];
+    const whereConditions: string[] = [];
 
     if (entryTypes && entryTypes.length > 0) {
       const types = entryTypes.map((t) => `'${t}'`).join(", ");
@@ -380,13 +368,13 @@ export class MemoryIndexer {
 
     // 총 개수 조회
     const countQuery = `
-      SELECT CAST(COUNT(*) AS INTEGER) as total
+      SELECT COUNT(*) as total
       FROM entries e
       JOIN sessions s ON e.session_id = s.id
       ${whereClause}
     `;
-    const countRows = await this.runSelect(countQuery);
-    const total = (countRows[0]?.total as number) || 0;
+    const countRow = this.db.prepare(countQuery).get() as { total: number };
+    const total = countRow?.total || 0;
 
     // 엔트리 조회
     const validSortColumns = ["created_at", "title", "entry_type", "memory_stage", "access_count"];
@@ -402,7 +390,7 @@ export class MemoryIndexer {
       LIMIT ${limit} OFFSET ${offset}
     `;
 
-    const rows = await this.runSelect(query);
+    const rows = this.db.prepare(query).all() as Record<string, unknown>[];
     const entries: EntryWithMeta[] = rows.map((row) => ({
       id: row.id as string,
       sessionId: row.session_id as string,
@@ -461,7 +449,7 @@ export class MemoryIndexer {
       WHERE id = ?
     `;
 
-    await this.runQuery(query, params);
+    this.db.prepare(query).run(...params);
     return true;
   }
 
@@ -472,11 +460,11 @@ export class MemoryIndexer {
     if (!this.db) throw new Error("Database not initialized");
 
     // 먼저 관련된 promotion_history와 conflicts 삭제
-    await this.runQuery("DELETE FROM promotion_history WHERE entry_id = ?", [entryId]);
-    await this.runQuery("DELETE FROM conflicts WHERE entry_id_1 = ? OR entry_id_2 = ?", [entryId, entryId]);
+    this.db.prepare("DELETE FROM promotion_history WHERE entry_id = ?").run(entryId);
+    this.db.prepare("DELETE FROM conflicts WHERE entry_id_1 = ? OR entry_id_2 = ?").run(entryId, entryId);
 
     // 엔트리 삭제
-    await this.runQuery("DELETE FROM entries WHERE id = ?", [entryId]);
+    this.db.prepare("DELETE FROM entries WHERE id = ?").run(entryId);
 
     return true;
   }
@@ -513,39 +501,25 @@ export class MemoryIndexer {
     }
   }
 
-  private runQuery(sql: string, params: unknown[] = []): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db!.run(sql, ...params, (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
-  private runSelect(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    return new Promise((resolve, reject) => {
-      this.db!.all(sql, ...params, (err: Error | null, rows: Record<string, unknown>[]) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-  }
-
   /**
    * 타입별 엔트리 수 조회 (Dashboard용)
    */
   async getEntriesByType(): Promise<Record<string, number>> {
     if (!this.db) return {};
 
-    const rows = await this.runSelect(`
-      SELECT entry_type, CAST(COUNT(*) AS INTEGER) as count
+    const rows = this.db
+      .prepare(
+        `
+      SELECT entry_type, COUNT(*) as count
       FROM entries
       GROUP BY entry_type
-    `);
+    `
+      )
+      .all() as { entry_type: string; count: number }[];
 
     const result: Record<string, number> = {};
     for (const row of rows) {
-      result[row.entry_type as string] = row.count as number;
+      result[row.entry_type] = row.count;
     }
     return result;
   }
@@ -556,17 +530,18 @@ export class MemoryIndexer {
   async getTopAccessedEntries(limit = 10): Promise<EntryWithMeta[]> {
     if (!this.db) return [];
 
-    const rows = await this.runSelect(
-      `
+    const rows = this.db
+      .prepare(
+        `
       SELECT e.*, s.date as session_date, s.title as session_title, s.idr_path
       FROM entries e
       JOIN sessions s ON e.session_id = s.id
       WHERE e.access_count > 0
       ORDER BY e.access_count DESC, e.last_accessed_at DESC
       LIMIT ?
-      `,
-      [limit]
-    );
+      `
+      )
+      .all(limit) as Record<string, unknown>[];
 
     return rows.map((row) => ({
       id: row.id as string,
@@ -590,19 +565,15 @@ export class MemoryIndexer {
 
   async close(): Promise<void> {
     if (this.db) {
-      return new Promise((resolve) => {
-        this.db!.close(() => {
-          this.db = null;
-          resolve();
-        });
-      });
+      this.db.close();
+      this.db = null;
     }
   }
 
   /**
    * DB 인스턴스 반환 (GraduationManager 등과 공유)
    */
-  getDatabase(): duckdb.Database | null {
+  getDatabase(): DatabaseType | null {
     return this.db;
   }
 }

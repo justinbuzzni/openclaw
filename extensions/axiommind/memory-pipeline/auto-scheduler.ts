@@ -10,6 +10,7 @@
  * - 그래프 정리 (orphan 노드 제거)
  */
 
+import type { Database } from "better-sqlite3";
 import type { GraduationManager } from "./graduation.js";
 import type { MemoryGraphManager } from "./memory-graph.js";
 import type { MemoryPipeline } from "./orchestrator.js";
@@ -244,12 +245,12 @@ export class AutoPromotionScheduler {
     try {
       console.log("[AutoScheduler] Running memory consolidation...");
 
-      const candidates = await this.findConsolidationCandidates();
+      const candidates = this.findConsolidationCandidates();
       let consolidatedCount = 0;
 
       for (const candidate of candidates) {
         if (candidate.confidence >= 0.7) {
-          const success = await this.consolidateMemories(candidate);
+          const success = this.consolidateMemories(candidate);
           if (success) {
             consolidatedCount++;
           }
@@ -288,17 +289,17 @@ export class AutoPromotionScheduler {
     try {
       console.log("[AutoScheduler] Running graph cleanup...");
 
-      const db = this.pipeline.indexer?.getDatabase?.();
+      const db = this.pipeline.indexer?.getDatabase?.() as Database | undefined;
       if (!db) {
         console.warn("[AutoScheduler] Database not available for graph cleanup");
         return;
       }
 
       // Orphan 노드 제거 (연결된 엣지가 없고 30일 이상 된 노드)
-      await this.removeOrphanNodes(db);
+      this.removeOrphanNodes(db);
 
       // 약한 엣지 정리 (strength < 0.1이고 30일 이상 미사용)
-      await this.removeWeakEdges(db);
+      this.removeWeakEdges(db);
 
       this.stats.lastGraphCleanup = new Date();
 
@@ -313,15 +314,15 @@ export class AutoPromotionScheduler {
   /**
    * 통합 후보 찾기
    */
-  private async findConsolidationCandidates(): Promise<ConsolidationCandidate[]> {
-    const db = this.pipeline.indexer?.getDatabase?.();
+  private findConsolidationCandidates(): ConsolidationCandidate[] {
+    const db = this.pipeline.indexer?.getDatabase?.() as Database | undefined;
     if (!db) {
       return [];
     }
 
-    return new Promise((resolve, reject) => {
-      // 유사한 ephemeral 메모리들을 그룹화
-      db.all(
+    // 유사한 ephemeral 메모리들을 그룹화
+    const rows = db
+      .prepare(
         `
         SELECT
           e1.id as id1,
@@ -334,22 +335,15 @@ export class AutoPromotionScheduler {
           AND e2.entry_type = 'fact'
           AND COALESCE(e1.memory_stage, 'working') IN ('working', 'candidate')
           AND COALESCE(e2.memory_stage, 'working') IN ('working', 'candidate')
-          AND e1.created_at > current_timestamp - interval '30 days'
-          AND e2.created_at > current_timestamp - interval '30 days'
+          AND e1.created_at > datetime('now', '-30 days')
+          AND e2.created_at > datetime('now', '-30 days')
         LIMIT 100
-      `,
-        (err, rows) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+      `
+      )
+      .all() as Array<Record<string, unknown>>;
 
-          // 간단한 유사도 기반 그룹화
-          const candidates = this.groupSimilarEntries(rows as Array<Record<string, unknown>>);
-          resolve(candidates);
-        }
-      );
-    });
+    // 간단한 유사도 기반 그룹화
+    return this.groupSimilarEntries(rows);
   }
 
   /**
@@ -465,8 +459,8 @@ export class AutoPromotionScheduler {
   /**
    * 메모리 통합 실행
    */
-  private async consolidateMemories(candidate: ConsolidationCandidate): Promise<boolean> {
-    const db = this.pipeline.indexer?.getDatabase?.();
+  private consolidateMemories(candidate: ConsolidationCandidate): boolean {
+    const db = this.pipeline.indexer?.getDatabase?.() as Database | undefined;
     if (!db) {
       return false;
     }
@@ -476,43 +470,35 @@ export class AutoPromotionScheduler {
       const representativeId = candidate.entries[0].id;
       const otherIds = candidate.entries.slice(1).map((e) => e.id);
 
-      // 대표 엔트리를 profile 카테고리로 업그레이드
-      await new Promise<void>((resolve, reject) => {
-        db.run(
+      // 트랜잭션으로 처리
+      const transaction = db.transaction(() => {
+        // 대표 엔트리를 profile 카테고리로 업그레이드
+        db.prepare(
           `
           UPDATE entries
           SET memory_stage = 'verified',
               promotion_reason = 'consolidation',
-              promoted_at = now()
+              promoted_at = datetime('now')
           WHERE id = ?
-        `,
-          representativeId,
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          }
+        `
+        ).run(representativeId);
+
+        // 다른 엔트리들은 대표 엔트리를 참조하도록 표시
+        const updateOther = db.prepare(
+          `
+          UPDATE entries
+          SET consolidated_into = ?,
+              memory_stage = 'archived'
+          WHERE id = ?
+        `
         );
+
+        for (const otherId of otherIds) {
+          updateOther.run(representativeId, otherId);
+        }
       });
 
-      // 다른 엔트리들은 대표 엔트리를 참조하도록 표시
-      for (const otherId of otherIds) {
-        await new Promise<void>((resolve, reject) => {
-          db.run(
-            `
-            UPDATE entries
-            SET consolidated_into = ?,
-                memory_stage = 'archived'
-            WHERE id = ?
-          `,
-            representativeId,
-            otherId,
-            (err) => {
-              if (err) reject(err);
-              else resolve();
-            }
-          );
-        });
-      }
+      transaction();
 
       console.log(
         `[AutoScheduler] Consolidated ${candidate.entries.length} memories into ${representativeId}`
@@ -527,9 +513,9 @@ export class AutoPromotionScheduler {
   /**
    * Orphan 노드 제거
    */
-  private async removeOrphanNodes(db: unknown): Promise<number> {
-    return new Promise((resolve, reject) => {
-      (db as { run: (sql: string, callback: (err: Error | null) => void) => void }).run(
+  private removeOrphanNodes(db: Database): number {
+    const result = db
+      .prepare(
         `
         DELETE FROM memory_nodes
         WHERE id NOT IN (
@@ -537,39 +523,29 @@ export class AutoPromotionScheduler {
           UNION
           SELECT target_id FROM memory_edges
         )
-        AND created_at < current_timestamp - interval '30 days'
-      `,
-        (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(0); // DuckDB doesn't return affected rows easily
-          }
-        }
-      );
-    });
+        AND created_at < datetime('now', '-30 days')
+      `
+      )
+      .run();
+
+    return result.changes;
   }
 
   /**
    * 약한 엣지 제거
    */
-  private async removeWeakEdges(db: unknown): Promise<number> {
-    return new Promise((resolve, reject) => {
-      (db as { run: (sql: string, callback: (err: Error | null) => void) => void }).run(
+  private removeWeakEdges(db: Database): number {
+    const result = db
+      .prepare(
         `
         DELETE FROM memory_edges
         WHERE strength < 0.1
-        AND updated_at < current_timestamp - interval '30 days'
-      `,
-        (err) => {
-          if (err) {
-            reject(err);
-          } else {
-            resolve(0);
-          }
-        }
-      );
-    });
+        AND last_confirmed < datetime('now', '-30 days')
+      `
+      )
+      .run();
+
+    return result.changes;
   }
 
   /**

@@ -11,13 +11,14 @@
     "build:web": "cd web && npm run build"
   },
   "dependencies": {
-    "duckdb": "^1.0.0",
+    "better-sqlite3": "^11.0.0",
     "@anthropic-ai/sdk": "^0.30.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.1.26"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0"
   }

@@ -6,7 +6,7 @@
  *
  * Idris GraduationSchema.idr과 동기화
  */
-import * as duckdb from "duckdb";
+import type { Database } from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import type {
   MemoryStage,
@@ -34,9 +34,9 @@ const PROMOTION_CONFIG = {
 };
 
 export class GraduationManager {
-  private db: duckdb.Database;
+  private db: Database;
 
-  constructor(db: duckdb.Database) {
+  constructor(db: Database) {
     this.db = db;
   }
 
@@ -54,7 +54,7 @@ export class GraduationManager {
    */
   async promoteToVerified(entryId: string, reason: PromotionReason): Promise<PromotionResult> {
     // 추가 검증: Verified 레벨 요구사항 확인
-    const entry = await this.getEntry(entryId);
+    const entry = this.getEntry(entryId);
     if (entry) {
       const content = JSON.parse(entry.content as string) as AnyEntry;
       const validation = isValidForStage("verified", content);
@@ -78,7 +78,7 @@ export class GraduationManager {
    */
   async promoteToCertified(entryId: string): Promise<PromotionResult> {
     // 충돌 확인
-    const hasConflict = await this.hasUnresolvedConflict(entryId);
+    const hasConflict = this.hasUnresolvedConflict(entryId);
     if (hasConflict) {
       return {
         success: false,
@@ -97,7 +97,7 @@ export class GraduationManager {
    * 수동 승격 (사용자 액션)
    */
   async promoteManually(entryId: string, targetStage: MemoryStage): Promise<PromotionResult> {
-    const entry = await this.getEntry(entryId);
+    const entry = this.getEntry(entryId);
     if (!entry) {
       return {
         success: false,
@@ -144,7 +144,7 @@ export class GraduationManager {
    * 역방향 강등
    */
   async demote(entryId: string, reason: DemotionReason): Promise<PromotionResult> {
-    const entry = await this.getEntry(entryId);
+    const entry = this.getEntry(entryId);
     if (!entry) {
       return {
         success: false,
@@ -194,21 +194,21 @@ export class GraduationManager {
     const results: PromotionResult[] = [];
 
     // L2 -> L3: 7일 경과 또는 confirmation_count >= 3
-    const candidatesForVerified = await this.getCandidatesForVerified();
+    const candidatesForVerified = this.getCandidatesForVerified();
     for (const entry of candidatesForVerified) {
       const result = await this.promoteToVerified(entry.id as string, entry.reason);
       results.push(result);
     }
 
     // L3 -> L4: 30일 경과 및 충돌 없음
-    const verifiedForCertified = await this.getVerifiedForCertified();
+    const verifiedForCertified = this.getVerifiedForCertified();
     for (const entry of verifiedForCertified) {
       const result = await this.promoteToCertified(entry.id as string);
       results.push(result);
     }
 
     // L4 -> L3: 90일 미사용
-    const certifiedForDemotion = await this.getCertifiedForDemotion();
+    const certifiedForDemotion = this.getCertifiedForDemotion();
     for (const entry of certifiedForDemotion) {
       const result = await this.demote(entry.id as string, "unused");
       results.push(result);
@@ -223,76 +223,61 @@ export class GraduationManager {
    * Stage별 통계 조회
    */
   async getStats(): Promise<GraduationStats> {
-    return new Promise((resolve, reject) => {
-      this.db.all(
+    const rows = this.db
+      .prepare(
         `
-        SELECT
-          COALESCE(memory_stage, 'working') as stage,
-          CAST(COUNT(*) AS INTEGER) as count
-        FROM entries
-        GROUP BY memory_stage
-      `,
-        (err, rows) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+      SELECT
+        COALESCE(memory_stage, 'working') as stage,
+        COUNT(*) as count
+      FROM entries
+      GROUP BY memory_stage
+    `
+      )
+      .all() as Array<{ stage: string; count: number }>;
 
-          const stats: GraduationStats = {
-            raw: 0,
-            working: 0,
-            candidate: 0,
-            verified: 0,
-            certified: 0,
-            total: 0,
-          };
+    const stats: GraduationStats = {
+      raw: 0,
+      working: 0,
+      candidate: 0,
+      verified: 0,
+      certified: 0,
+      total: 0,
+    };
 
-          for (const row of rows as Array<{ stage: string; count: number }>) {
-            const stage = row.stage as MemoryStage;
-            if (stage in stats) {
-              stats[stage] = row.count;
-              stats.total += row.count;
-            }
-          }
+    for (const row of rows) {
+      const stage = row.stage as MemoryStage;
+      if (stage in stats) {
+        stats[stage] = row.count;
+        stats.total += row.count;
+      }
+    }
 
-          resolve(stats);
-        }
-      );
-    });
+    return stats;
   }
 
   /**
    * 최근 승격 이력 조회
    */
   async getRecentPromotions(limit: number = 10): Promise<PromotionRecord[]> {
-    return new Promise((resolve, reject) => {
-      this.db.all(
+    const rows = this.db
+      .prepare(
         `
-        SELECT id, entry_id, from_stage, to_stage, reason, promoted_at
-        FROM promotion_history
-        ORDER BY promoted_at DESC
-        LIMIT ?
-      `,
-        limit,
-        (err, rows) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+      SELECT id, entry_id, from_stage, to_stage, reason, promoted_at
+      FROM promotion_history
+      ORDER BY promoted_at DESC
+      LIMIT ?
+    `
+      )
+      .all(limit) as Array<Record<string, unknown>>;
 
-          const records = (rows as Array<Record<string, unknown>>).map((row) => ({
-            id: row.id as string,
-            entryId: row.entry_id as string,
-            fromStage: row.from_stage as MemoryStage,
-            toStage: row.to_stage as MemoryStage,
-            reason: row.reason as PromotionReason,
-            promotedAt: row.promoted_at as string,
-          }));
-
-          resolve(records);
-        }
-      );
-    });
+    return rows.map((row) => ({
+      id: row.id as string,
+      entryId: row.entry_id as string,
+      fromStage: row.from_stage as MemoryStage,
+      toStage: row.to_stage as MemoryStage,
+      reason: row.reason as PromotionReason,
+      promotedAt: row.promoted_at as string,
+    }));
   }
 
   // === 충돌 관리 ===
@@ -300,36 +285,24 @@ export class GraduationManager {
   /**
    * 미해결 충돌 확인
    */
-  async hasUnresolvedConflict(entryId: string): Promise<boolean> {
-    return new Promise((resolve, reject) => {
-      this.db.all(
+  hasUnresolvedConflict(entryId: string): boolean {
+    const row = this.db
+      .prepare(
         `
-        SELECT CAST(COUNT(*) AS INTEGER) as count FROM conflicts
-        WHERE (entry_id_1 = ? OR entry_id_2 = ?)
-        AND resolved_at IS NULL
-      `,
-        entryId,
-        entryId,
-        (err: Error | null, rows: unknown) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          const typedRows = rows as Array<{ count: number }> | undefined;
-          resolve((typedRows?.[0]?.count ?? 0) > 0);
-        }
-      );
-    });
+      SELECT COUNT(*) as count FROM conflicts
+      WHERE (entry_id_1 = ? OR entry_id_2 = ?)
+      AND resolved_at IS NULL
+    `
+      )
+      .get(entryId, entryId) as { count: number } | undefined;
+
+    return (row?.count ?? 0) > 0;
   }
 
   /**
    * 충돌 기록
    */
-  async recordConflict(
-    entryId1: string,
-    entryId2: string,
-    conflictType: ConflictType
-  ): Promise<Conflict> {
+  recordConflict(entryId1: string, entryId2: string, conflictType: ConflictType): Conflict {
     const conflict: Conflict = {
       id: randomUUID(),
       entryId1,
@@ -338,47 +311,31 @@ export class GraduationManager {
       detectedAt: new Date().toISOString(),
     };
 
-    return new Promise((resolve, reject) => {
-      this.db.run(
+    this.db
+      .prepare(
         `
-        INSERT INTO conflicts (id, entry_id_1, entry_id_2, conflict_type, detected_at)
-        VALUES (?, ?, ?, ?, ?)
-      `,
-        conflict.id,
-        conflict.entryId1,
-        conflict.entryId2,
-        conflict.conflictType,
-        conflict.detectedAt,
-        (err) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve(conflict);
-        }
-      );
-    });
+      INSERT INTO conflicts (id, entry_id_1, entry_id_2, conflict_type, detected_at)
+      VALUES (?, ?, ?, ?, ?)
+    `
+      )
+      .run(conflict.id, conflict.entryId1, conflict.entryId2, conflict.conflictType, conflict.detectedAt);
+
+    return conflict;
   }
 
   /**
    * 충돌 해결
    */
-  async resolveConflict(conflictId: string, resolution: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(
+  resolveConflict(conflictId: string, resolution: string): void {
+    this.db
+      .prepare(
         `
-        UPDATE conflicts
-        SET resolved_at = now(), resolution = ?
-        WHERE id = ?
-      `,
-        resolution,
-        conflictId,
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+      UPDATE conflicts
+      SET resolved_at = datetime('now'), resolution = ?
+      WHERE id = ?
+    `
+      )
+      .run(resolution, conflictId);
   }
 
   // === Private 헬퍼 메서드 ===
@@ -402,7 +359,7 @@ export class GraduationManager {
     }
 
     // 현재 stage 확인
-    const entry = await this.getEntry(entryId);
+    const entry = this.getEntry(entryId);
     if (!entry) {
       return {
         success: false,
@@ -429,205 +386,150 @@ export class GraduationManager {
     return this.updateStage(entryId, fromStage, toStage, reason);
   }
 
-  private async updateStage(
+  private updateStage(
     entryId: string,
     fromStage: MemoryStage,
     toStage: MemoryStage,
     reason: PromotionReason
-  ): Promise<PromotionResult> {
-    return new Promise((resolve, reject) => {
-      // 트랜잭션으로 처리
-      this.db.run(
-        `
+  ): PromotionResult {
+    // 트랜잭션으로 처리
+    const transaction = this.db.transaction(() => {
+      // entries 업데이트
+      this.db
+        .prepare(
+          `
         UPDATE entries
         SET memory_stage = ?,
-            promoted_at = now(),
+            promoted_at = datetime('now'),
             promotion_reason = ?
         WHERE id = ?
-      `,
-        toStage,
-        reason,
-        entryId,
-        (err) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-
-          // 승격 이력 기록
-          const historyId = randomUUID();
-          this.db.run(
-            `
-            INSERT INTO promotion_history (id, entry_id, from_stage, to_stage, reason, promoted_at)
-            VALUES (?, ?, ?, ?, ?, now())
-          `,
-            historyId,
-            entryId,
-            fromStage,
-            toStage,
-            reason,
-            (histErr) => {
-              if (histErr) {
-                reject(histErr);
-                return;
-              }
-
-              resolve({
-                success: true,
-                entryId,
-                fromStage,
-                toStage,
-                reason,
-              });
-            }
-          );
-        }
-      );
-    });
-  }
-
-  private async getEntry(entryId: string): Promise<Record<string, unknown> | null> {
-    return new Promise((resolve, reject) => {
-      this.db.all(
-        `SELECT * FROM entries WHERE id = ?`,
-        entryId,
-        (err: Error | null, rows: Record<string, unknown>[]) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve(rows?.[0] ?? null);
-        }
-      );
-    });
-  }
-
-  private async getCandidatesForVerified(): Promise<Array<{ id: unknown; reason: PromotionReason }>> {
-    return new Promise((resolve, reject) => {
-      const daysAgo = PROMOTION_CONFIG.DAYS_FOR_VERIFIED;
-      const confirmCount = PROMOTION_CONFIG.CONFIRMATION_COUNT_FOR_VERIFIED;
-
-      this.db.all(
-        `
-        SELECT id,
-          CASE
-            WHEN COALESCE(confirmation_count, 0) >= ? THEN 'confirmation_reached'
-            ELSE 'time_elapsed'
-          END as reason
-        FROM entries
-        WHERE COALESCE(memory_stage, 'working') = 'candidate'
-        AND (
-          created_at < current_timestamp - interval '${daysAgo} days'
-          OR COALESCE(confirmation_count, 0) >= ?
+      `
         )
-      `,
-        confirmCount,
-        confirmCount,
-        (err, rows) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve(
-            (rows as Array<{ id: unknown; reason: string }>).map((r) => ({
-              id: r.id,
-              reason: r.reason as PromotionReason,
-            }))
-          );
-        }
-      );
+        .run(toStage, reason, entryId);
+
+      // 승격 이력 기록
+      const historyId = randomUUID();
+      this.db
+        .prepare(
+          `
+        INSERT INTO promotion_history (id, entry_id, from_stage, to_stage, reason, promoted_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+      `
+        )
+        .run(historyId, entryId, fromStage, toStage, reason);
     });
+
+    transaction();
+
+    return {
+      success: true,
+      entryId,
+      fromStage,
+      toStage,
+      reason,
+    };
   }
 
-  private async getVerifiedForCertified(): Promise<Array<{ id: unknown }>> {
-    return new Promise((resolve, reject) => {
-      const daysAgo = PROMOTION_CONFIG.DAYS_FOR_CERTIFIED;
-
-      this.db.all(
-        `
-        SELECT e.id FROM entries e
-        WHERE COALESCE(e.memory_stage, 'working') = 'verified'
-        AND e.created_at < current_timestamp - interval '${daysAgo} days'
-        AND NOT EXISTS (
-          SELECT 1 FROM conflicts c
-          WHERE (c.entry_id_1 = e.id OR c.entry_id_2 = e.id)
-          AND c.resolved_at IS NULL
-        )
-      `,
-        (err, rows) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve(rows as Array<{ id: unknown }>);
-        }
-      );
-    });
+  private getEntry(entryId: string): Record<string, unknown> | null {
+    const row = this.db.prepare(`SELECT * FROM entries WHERE id = ?`).get(entryId) as
+      | Record<string, unknown>
+      | undefined;
+    return row ?? null;
   }
 
-  private async getCertifiedForDemotion(): Promise<Array<{ id: unknown }>> {
-    return new Promise((resolve, reject) => {
-      const daysAgo = PROMOTION_CONFIG.DAYS_FOR_DEMOTION;
+  private getCandidatesForVerified(): Array<{ id: unknown; reason: PromotionReason }> {
+    const daysAgo = PROMOTION_CONFIG.DAYS_FOR_VERIFIED;
+    const confirmCount = PROMOTION_CONFIG.CONFIRMATION_COUNT_FOR_VERIFIED;
 
-      this.db.all(
+    const rows = this.db
+      .prepare(
         `
-        SELECT id FROM entries
-        WHERE COALESCE(memory_stage, 'working') = 'certified'
-        AND (
-          last_accessed_at IS NULL
-          OR last_accessed_at < current_timestamp - interval '${daysAgo} days'
-        )
-      `,
-        (err, rows) => {
-          if (err) {
-            reject(err);
-            return;
-          }
-          resolve(rows as Array<{ id: unknown }>);
-        }
-      );
-    });
+      SELECT id,
+        CASE
+          WHEN COALESCE(confirmation_count, 0) >= ? THEN 'confirmation_reached'
+          ELSE 'time_elapsed'
+        END as reason
+      FROM entries
+      WHERE COALESCE(memory_stage, 'working') = 'candidate'
+      AND (
+        datetime(created_at) < datetime('now', '-${daysAgo} days')
+        OR COALESCE(confirmation_count, 0) >= ?
+      )
+    `
+      )
+      .all(confirmCount, confirmCount) as Array<{ id: unknown; reason: string }>;
+
+    return rows.map((r) => ({
+      id: r.id,
+      reason: r.reason as PromotionReason,
+    }));
+  }
+
+  private getVerifiedForCertified(): Array<{ id: unknown }> {
+    const daysAgo = PROMOTION_CONFIG.DAYS_FOR_CERTIFIED;
+
+    return this.db
+      .prepare(
+        `
+      SELECT e.id FROM entries e
+      WHERE COALESCE(e.memory_stage, 'working') = 'verified'
+      AND datetime(e.created_at) < datetime('now', '-${daysAgo} days')
+      AND NOT EXISTS (
+        SELECT 1 FROM conflicts c
+        WHERE (c.entry_id_1 = e.id OR c.entry_id_2 = e.id)
+        AND c.resolved_at IS NULL
+      )
+    `
+      )
+      .all() as Array<{ id: unknown }>;
+  }
+
+  private getCertifiedForDemotion(): Array<{ id: unknown }> {
+    const daysAgo = PROMOTION_CONFIG.DAYS_FOR_DEMOTION;
+
+    return this.db
+      .prepare(
+        `
+      SELECT id FROM entries
+      WHERE COALESCE(memory_stage, 'working') = 'certified'
+      AND (
+        last_accessed_at IS NULL
+        OR datetime(last_accessed_at) < datetime('now', '-${daysAgo} days')
+      )
+    `
+      )
+      .all() as Array<{ id: unknown }>;
   }
 
   /**
    * 접근 기록 업데이트
    */
-  async recordAccess(entryId: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(
+  recordAccess(entryId: string): void {
+    this.db
+      .prepare(
         `
-        UPDATE entries
-        SET last_accessed_at = now(),
-            access_count = COALESCE(access_count, 0) + 1
-        WHERE id = ?
-      `,
-        entryId,
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+      UPDATE entries
+      SET last_accessed_at = datetime('now'),
+          access_count = COALESCE(access_count, 0) + 1
+      WHERE id = ?
+    `
+      )
+      .run(entryId);
   }
 
   /**
    * confirmation_count 증가
    */
-  async incrementConfirmation(entryId: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(
+  incrementConfirmation(entryId: string): void {
+    this.db
+      .prepare(
         `
-        UPDATE entries
-        SET confirmation_count = COALESCE(confirmation_count, 0) + 1
-        WHERE id = ?
-      `,
-        entryId,
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+      UPDATE entries
+      SET confirmation_count = COALESCE(confirmation_count, 0) + 1
+      WHERE id = ?
+    `
+      )
+      .run(entryId);
   }
 }
 

@@ -7,7 +7,7 @@
  * - Multi-hop 쿼리 지원
  */
 
-import type { Database } from "duckdb";
+import type { Database } from "better-sqlite3";
 import type { AnyEntry, EntryType } from "./types.js";
 import type { MemoryCategory } from "./intent-router.js";
 import {
@@ -49,45 +49,47 @@ export class MemoryGraphManager {
   /**
    * 그래프 테이블 초기화
    */
-  async initialize(): Promise<void> {
-    await this.runQuery(`
-      -- Memory Nodes 테이블
+  initialize(): void {
+    // Memory Nodes 테이블
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS memory_nodes (
-        id VARCHAR PRIMARY KEY,
-        type VARCHAR NOT NULL,
-        content VARCHAR NOT NULL,
-        category VARCHAR NOT NULL,
-        temporal_weight DOUBLE DEFAULT 1.0,
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        content TEXT NOT NULL,
+        category TEXT NOT NULL,
+        temporal_weight REAL DEFAULT 1.0,
         access_count INTEGER DEFAULT 0,
-        last_accessed TIMESTAMP DEFAULT now(),
-        confidence DOUBLE DEFAULT 0.5,
-        created_at TIMESTAMP DEFAULT now(),
-        source_entries JSON DEFAULT '[]'
-      );
+        last_accessed TEXT DEFAULT (datetime('now')),
+        confidence REAL DEFAULT 0.5,
+        created_at TEXT DEFAULT (datetime('now')),
+        source_entries TEXT DEFAULT '[]'
+      )
+    `);
 
-      -- Memory Edges 테이블
+    // Memory Edges 테이블
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS memory_edges (
-        id VARCHAR PRIMARY KEY,
-        source_id VARCHAR NOT NULL,
-        target_id VARCHAR NOT NULL,
-        relation VARCHAR NOT NULL,
-        strength DOUBLE DEFAULT 0.5,
-        created_at TIMESTAMP DEFAULT now(),
-        last_confirmed TIMESTAMP,
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        relation TEXT NOT NULL,
+        strength REAL DEFAULT 0.5,
+        created_at TEXT DEFAULT (datetime('now')),
+        last_confirmed TEXT,
         confirmations INTEGER DEFAULT 1,
-        context VARCHAR,
+        context TEXT,
         FOREIGN KEY (source_id) REFERENCES memory_nodes(id),
         FOREIGN KEY (target_id) REFERENCES memory_nodes(id)
-      );
-
-      -- 인덱스
-      CREATE INDEX IF NOT EXISTS idx_nodes_type ON memory_nodes(type);
-      CREATE INDEX IF NOT EXISTS idx_nodes_category ON memory_nodes(category);
-      CREATE INDEX IF NOT EXISTS idx_nodes_content ON memory_nodes(content);
-      CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id);
-      CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id);
-      CREATE INDEX IF NOT EXISTS idx_edges_relation ON memory_edges(relation);
+      )
     `);
+
+    // 인덱스
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_nodes_type ON memory_nodes(type)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_nodes_category ON memory_nodes(category)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_nodes_content ON memory_nodes(content)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_edges_source ON memory_edges(source_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_edges_target ON memory_edges(target_id)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_edges_relation ON memory_edges(relation)`);
   }
 
   // === Node Operations ===
@@ -95,25 +97,28 @@ export class MemoryGraphManager {
   /**
    * 노드 생성 또는 업데이트
    */
-  async upsertNode(node: Omit<MemoryNode, "embedding">): Promise<string> {
+  upsertNode(node: Omit<MemoryNode, "embedding">): string {
     const id = node.id || this.generateId("node");
 
-    await this.runQuery(
+    // SQLite에서 UPSERT 사용
+    this.db
+      .prepare(
+        `
+        INSERT INTO memory_nodes
+        (id, type, content, category, temporal_weight, access_count, last_accessed, confidence, created_at, source_entries)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+          content = excluded.content,
+          temporal_weight = excluded.temporal_weight,
+          access_count = memory_nodes.access_count + 1,
+          last_accessed = datetime('now'),
+          confidence = CASE
+            WHEN excluded.confidence > memory_nodes.confidence THEN excluded.confidence
+            ELSE memory_nodes.confidence
+          END
       `
-      INSERT INTO memory_nodes
-      (id, type, content, category, temporal_weight, access_count, last_accessed, confidence, created_at, source_entries)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (id) DO UPDATE SET
-        content = EXCLUDED.content,
-        temporal_weight = EXCLUDED.temporal_weight,
-        access_count = memory_nodes.access_count + 1,
-        last_accessed = now(),
-        confidence = CASE
-          WHEN EXCLUDED.confidence > memory_nodes.confidence THEN EXCLUDED.confidence
-          ELSE memory_nodes.confidence
-        END
-    `,
-      [
+      )
+      .run(
         id,
         node.type,
         node.content,
@@ -123,9 +128,8 @@ export class MemoryGraphManager {
         node.lastAccessed.toISOString(),
         node.confidence,
         node.createdAt.toISOString(),
-        JSON.stringify(node.sourceEntries),
-      ]
-    );
+        JSON.stringify(node.sourceEntries)
+      );
 
     return id;
   }
@@ -133,31 +137,30 @@ export class MemoryGraphManager {
   /**
    * 노드 조회
    */
-  async getNode(id: string): Promise<MemoryNode | null> {
-    const rows = await this.runSelect(
-      "SELECT * FROM memory_nodes WHERE id = ?",
-      [id]
-    );
+  getNode(id: string): MemoryNode | null {
+    const row = this.db.prepare("SELECT * FROM memory_nodes WHERE id = ?").get(id) as
+      | Record<string, unknown>
+      | undefined;
 
-    if (rows.length === 0) return null;
+    if (!row) return null;
 
-    return this.rowToNode(rows[0]);
+    return this.rowToNode(row);
   }
 
   /**
    * 컨텐츠로 노드 검색 (키워드 기반)
    */
-  async searchNodes(
+  searchNodes(
     query: string,
     options?: {
       type?: MemoryNode["type"];
       category?: MemoryCategory;
       limit?: number;
     }
-  ): Promise<MemoryNode[]> {
+  ): MemoryNode[] {
     let sql = `
       SELECT * FROM memory_nodes
-      WHERE content ILIKE ?
+      WHERE content LIKE ?
     `;
     const params: unknown[] = [`%${query}%`];
 
@@ -177,7 +180,7 @@ export class MemoryGraphManager {
       sql += ` LIMIT ${options.limit}`;
     }
 
-    const rows = await this.runSelect(sql, params);
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map((row) => this.rowToNode(row));
   }
 
@@ -216,7 +219,7 @@ export class MemoryGraphManager {
 
       sql += " ORDER BY temporal_weight DESC, access_count DESC LIMIT 100";
 
-      const rows = await this.runSelect(sql, params);
+      const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
       const candidateNodes = rows.map((row) => this.rowToNode(row));
 
       if (candidateNodes.length === 0) {
@@ -254,7 +257,7 @@ export class MemoryGraphManager {
     } catch (error) {
       // 임베딩 실패 시 키워드 검색으로 폴백
       console.warn(`[MemoryGraph] Semantic search failed, falling back to keyword: ${error}`);
-      const keywordResults = await this.searchNodes(query, options);
+      const keywordResults = this.searchNodes(query, options);
       return keywordResults.map((node) => ({ node, similarity: 0.5 }));
     }
   }
@@ -287,7 +290,7 @@ export class MemoryGraphManager {
 
       sql += " LIMIT 200";
 
-      const rows = await this.runSelect(sql, params);
+      const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
       const nodes = rows.map((row) => this.rowToNode(row));
 
       if (nodes.length === 0) {
@@ -314,17 +317,18 @@ export class MemoryGraphManager {
   /**
    * 노드 접근 기록 업데이트
    */
-  async recordNodeAccess(id: string): Promise<void> {
-    await this.runQuery(
+  recordNodeAccess(id: string): void {
+    this.db
+      .prepare(
+        `
+        UPDATE memory_nodes
+        SET access_count = access_count + 1,
+            last_accessed = datetime('now'),
+            temporal_weight = 1.0
+        WHERE id = ?
       `
-      UPDATE memory_nodes
-      SET access_count = access_count + 1,
-          last_accessed = now(),
-          temporal_weight = 1.0
-      WHERE id = ?
-    `,
-      [id]
-    );
+      )
+      .run(id);
   }
 
   // === Edge Operations ===
@@ -332,47 +336,50 @@ export class MemoryGraphManager {
   /**
    * 엣지 생성 또는 강화
    */
-  async upsertEdge(edge: Omit<MemoryEdge, "id">): Promise<string> {
+  upsertEdge(edge: Omit<MemoryEdge, "id">): string {
     const id = this.generateId("edge");
 
     // 기존 엣지 확인
-    const existing = await this.runSelect(
+    const existing = this.db
+      .prepare(
+        `
+        SELECT id, strength, confirmations FROM memory_edges
+        WHERE source_id = ? AND target_id = ? AND relation = ?
       `
-      SELECT id, strength, confirmations FROM memory_edges
-      WHERE source_id = ? AND target_id = ? AND relation = ?
-    `,
-      [edge.source, edge.target, edge.relation]
-    );
+      )
+      .all(edge.source, edge.target, edge.relation) as Record<string, unknown>[];
 
     if (existing.length > 0) {
       // 기존 엣지 강화
       const newStrength = Math.min(1.0, (existing[0].strength as number) + 0.1);
       const newConfirmations = (existing[0].confirmations as number) + 1;
 
-      await this.runQuery(
+      this.db
+        .prepare(
+          `
+          UPDATE memory_edges
+          SET strength = ?,
+              confirmations = ?,
+              last_confirmed = datetime('now'),
+              context = COALESCE(?, context)
+          WHERE id = ?
         `
-        UPDATE memory_edges
-        SET strength = ?,
-            confirmations = ?,
-            last_confirmed = now(),
-            context = COALESCE(?, context)
-        WHERE id = ?
-      `,
-        [newStrength, newConfirmations, edge.context, existing[0].id]
-      );
+        )
+        .run(newStrength, newConfirmations, edge.context, existing[0].id);
 
       return existing[0].id as string;
     }
 
     // 새 엣지 생성
-    await this.runQuery(
+    this.db
+      .prepare(
+        `
+        INSERT INTO memory_edges
+        (id, source_id, target_id, relation, strength, created_at, confirmations, context)
+        VALUES (?, ?, ?, ?, ?, datetime('now'), 1, ?)
       `
-      INSERT INTO memory_edges
-      (id, source_id, target_id, relation, strength, created_at, confirmations, context)
-      VALUES (?, ?, ?, ?, ?, now(), 1, ?)
-    `,
-      [id, edge.source, edge.target, edge.relation, edge.strength, edge.context]
-    );
+      )
+      .run(id, edge.source, edge.target, edge.relation, edge.strength, edge.context);
 
     return id;
   }
@@ -380,10 +387,10 @@ export class MemoryGraphManager {
   /**
    * 노드의 연결된 엣지 조회
    */
-  async getEdgesFromNode(
+  getEdgesFromNode(
     nodeId: string,
     direction: "outgoing" | "incoming" | "both" = "both"
-  ): Promise<MemoryEdge[]> {
+  ): MemoryEdge[] {
     let sql: string;
 
     if (direction === "outgoing") {
@@ -395,7 +402,7 @@ export class MemoryGraphManager {
     }
 
     const params = direction === "both" ? [nodeId, nodeId] : [nodeId];
-    const rows = await this.runSelect(sql, params);
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
 
     return rows.map((row) => this.rowToEdge(row));
   }
@@ -421,7 +428,7 @@ export class MemoryGraphManager {
 
     // 시작 노드 찾기
     for (const startTerm of options.startNodes) {
-      const startNodes = await this.searchNodes(startTerm, { limit: 3 });
+      const startNodes = this.searchNodes(startTerm, { limit: 3 });
       for (const node of startNodes) {
         queue.push({
           nodeId: node.id,
@@ -440,7 +447,7 @@ export class MemoryGraphManager {
       visited.add(current.nodeId);
 
       // 현재 노드 가져오기
-      const node = await this.getNode(current.nodeId);
+      const node = this.getNode(current.nodeId);
       if (!node) continue;
 
       // 카테고리 필터 체크
@@ -466,7 +473,7 @@ export class MemoryGraphManager {
       if (current.hops >= options.maxHops) continue;
 
       // 연결된 엣지 탐색
-      const edges = await this.getEdgesFromNode(current.nodeId, "outgoing");
+      const edges = this.getEdgesFromNode(current.nodeId, "outgoing");
 
       for (const edge of edges) {
         // 관계 필터 체크
@@ -532,7 +539,7 @@ export class MemoryGraphManager {
   /**
    * 충돌 관계 찾기
    */
-  async findConflicts(nodeId?: string): Promise<Array<{ node1: MemoryNode; node2: MemoryNode; edge: MemoryEdge }>> {
+  findConflicts(nodeId?: string): Array<{ node1: MemoryNode; node2: MemoryNode; edge: MemoryEdge }> {
     let sql = `
       SELECT e.*,
              n1.id as n1_id, n1.type as n1_type, n1.content as n1_content, n1.category as n1_category,
@@ -553,7 +560,7 @@ export class MemoryGraphManager {
       params.push(nodeId, nodeId);
     }
 
-    const rows = await this.runSelect(sql, params);
+    const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
 
     return rows.map((row) => ({
       node1: this.rowToNode({
@@ -598,7 +605,7 @@ export class MemoryGraphManager {
     const createdEdgeIds: string[] = [];
 
     // 메인 노드 생성
-    const mainNodeId = await this.upsertNode({
+    const mainNodeId = this.upsertNode({
       id: `entry_${entryId}`,
       type: this.entryTypeToNodeType(entry.type),
       content: this.getEntryContent(entry),
@@ -616,7 +623,7 @@ export class MemoryGraphManager {
     switch (entry.type) {
       case "fact":
         if (entry.evidence) {
-          const evidenceNodeId = await this.upsertNode({
+          const evidenceNodeId = this.upsertNode({
             id: this.generateId("evidence"),
             type: "concept",
             content: entry.evidence,
@@ -630,7 +637,7 @@ export class MemoryGraphManager {
           });
           createdNodeIds.push(evidenceNodeId);
 
-          const edgeId = await this.upsertEdge({
+          const edgeId = this.upsertEdge({
             source: mainNodeId,
             target: evidenceNodeId,
             relation: "relates_to",
@@ -647,13 +654,13 @@ export class MemoryGraphManager {
         if (entry.basedOn && entry.basedOn.length > 0) {
           for (const factRef of entry.basedOn) {
             // 참조된 fact 노드 찾기 또는 생성
-            const factNodes = await this.searchNodes(factRef, { type: "concept", limit: 1 });
+            const factNodes = this.searchNodes(factRef, { type: "concept", limit: 1 });
             let factNodeId: string;
 
             if (factNodes.length > 0) {
               factNodeId = factNodes[0].id;
             } else {
-              factNodeId = await this.upsertNode({
+              factNodeId = this.upsertNode({
                 id: this.generateId("fact_ref"),
                 type: "concept",
                 content: factRef,
@@ -668,7 +675,7 @@ export class MemoryGraphManager {
               createdNodeIds.push(factNodeId);
             }
 
-            const edgeId = await this.upsertEdge({
+            const edgeId = this.upsertEdge({
               source: mainNodeId,
               target: factNodeId,
               relation: "decided",
@@ -684,7 +691,7 @@ export class MemoryGraphManager {
 
       case "insight":
         if (entry.implication) {
-          const implNodeId = await this.upsertNode({
+          const implNodeId = this.upsertNode({
             id: this.generateId("implication"),
             type: "concept",
             content: entry.implication,
@@ -698,7 +705,7 @@ export class MemoryGraphManager {
           });
           createdNodeIds.push(implNodeId);
 
-          const edgeId = await this.upsertEdge({
+          const edgeId = this.upsertEdge({
             source: mainNodeId,
             target: implNodeId,
             relation: "relates_to",
@@ -713,9 +720,9 @@ export class MemoryGraphManager {
 
       case "task":
         // Task는 project 노드와 연결
-        const projectNodes = await this.searchNodes("project", { type: "project", limit: 1 });
+        const projectNodes = this.searchNodes("project", { type: "project", limit: 1 });
         if (projectNodes.length > 0) {
-          const edgeId = await this.upsertEdge({
+          const edgeId = this.upsertEdge({
             source: projectNodes[0].id,
             target: mainNodeId,
             relation: "part_of",
@@ -737,19 +744,20 @@ export class MemoryGraphManager {
   /**
    * 모든 노드의 temporal weight 감쇠 적용
    */
-  async applyTemporalDecay(decayRate = 0.1): Promise<number> {
+  applyTemporalDecay(decayRate = 0.1): number {
     // 각 노드의 temporal weight를 last_accessed 기반으로 재계산
-    const nodes = await this.runSelect("SELECT id, last_accessed FROM memory_nodes");
+    const nodes = this.db
+      .prepare("SELECT id, last_accessed FROM memory_nodes")
+      .all() as Record<string, unknown>[];
     let updated = 0;
 
     for (const node of nodes) {
       const lastAccessed = new Date(node.last_accessed as string);
       const newWeight = calculateTemporalWeight(lastAccessed, decayRate);
 
-      await this.runQuery(
-        "UPDATE memory_nodes SET temporal_weight = ? WHERE id = ?",
-        [newWeight, node.id]
-      );
+      this.db
+        .prepare("UPDATE memory_nodes SET temporal_weight = ? WHERE id = ?")
+        .run(newWeight, node.id);
       updated++;
     }
 
@@ -813,23 +821,5 @@ export class MemoryGraphManager {
       confirmations: row.confirmations as number,
       context: row.context as string | undefined,
     };
-  }
-
-  private runQuery(sql: string, params: unknown[] = []): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(sql, ...params, (err: Error | null) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
-  private runSelect(sql: string, params: unknown[] = []): Promise<Record<string, unknown>[]> {
-    return new Promise((resolve, reject) => {
-      this.db.all(sql, ...params, (err: Error | null, rows: Record<string, unknown>[]) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
   }
 }

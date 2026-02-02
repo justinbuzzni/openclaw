@@ -5,7 +5,7 @@
  * 유사한 엔트리의 confirmation_count를 증가시킴
  */
 
-import type * as duckdb from "duckdb";
+import type { Database } from "better-sqlite3";
 import type { AnyEntry } from "./types.js";
 
 // 유사도 설정
@@ -20,9 +20,9 @@ export interface SimilarEntry {
 }
 
 export class SimilarityChecker {
-  private db: duckdb.Database;
+  private db: Database;
 
-  constructor(db: duckdb.Database) {
+  constructor(db: Database) {
     this.db = db;
   }
 
@@ -32,7 +32,7 @@ export class SimilarityChecker {
    */
   async checkAndConfirm(newEntry: AnyEntry): Promise<SimilarEntry[]> {
     // 같은 타입의 엔트리만 검색
-    const candidates = await this.getCandidates(newEntry.type);
+    const candidates = this.getCandidates(newEntry.type);
 
     const newText = this.entryToText(newEntry);
     const similar: SimilarEntry[] = [];
@@ -50,7 +50,7 @@ export class SimilarityChecker {
         });
 
         // confirmation_count 증가
-        await this.incrementConfirmation(candidate.id as string);
+        this.incrementConfirmation(candidate.id as string);
       }
     }
 
@@ -60,11 +60,9 @@ export class SimilarityChecker {
   /**
    * 후보 엔트리 조회
    */
-  private async getCandidates(
-    entryType: string
-  ): Promise<Record<string, unknown>[]> {
-    return new Promise((resolve, reject) => {
-      this.db.all(
+  private getCandidates(entryType: string): Record<string, unknown>[] {
+    return this.db
+      .prepare(
         `
         SELECT id, title, entry_type, text_for_search, memory_stage
         FROM entries
@@ -72,36 +70,25 @@ export class SimilarityChecker {
           AND COALESCE(memory_stage, 'working') IN ('working', 'candidate', 'verified', 'certified')
         ORDER BY created_at DESC
         LIMIT ?
-      `,
-        entryType,
-        MAX_CANDIDATES,
-        (err: Error | null, rows: Record<string, unknown>[]) => {
-          if (err) reject(err);
-          else resolve(rows || []);
-        }
-      );
-    });
+      `
+      )
+      .all(entryType, MAX_CANDIDATES) as Record<string, unknown>[];
   }
 
   /**
    * confirmation_count 증가
    */
-  private async incrementConfirmation(entryId: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.db.run(
+  private incrementConfirmation(entryId: string): void {
+    this.db
+      .prepare(
         `
         UPDATE entries
         SET confirmation_count = COALESCE(confirmation_count, 0) + 1,
-            last_accessed_at = now()
+            last_accessed_at = datetime('now')
         WHERE id = ?
-      `,
-        entryId,
-        (err: Error | null) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+      `
+      )
+      .run(entryId);
   }
 
   /**
@@ -177,11 +164,8 @@ export class SimilarityChecker {
   /**
    * 유사한 엔트리 검색 (UI용)
    */
-  async findSimilar(
-    entry: AnyEntry,
-    threshold: number = 0.7
-  ): Promise<SimilarEntry[]> {
-    const candidates = await this.getCandidates(entry.type);
+  findSimilar(entry: AnyEntry, threshold: number = 0.7): SimilarEntry[] {
+    const candidates = this.getCandidates(entry.type);
     const newText = this.entryToText(entry);
     const similar: SimilarEntry[] = [];
 
