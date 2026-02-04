@@ -2,7 +2,15 @@
  * Session Extractor
  *
  * LLM을 사용하여 채팅 세션에서 구조화된 메모리 데이터 추출
+ * 인증 우선순위:
+ *   1. Anthropic SDK (API key / OAuth token)
+ *   2. CLI 호출 (claude -p / codex) — subscription 사용자용
  */
+import { execFile, exec } from "node:child_process";
+import { writeFile, unlink, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Session, AnyEntry } from "./types.js";
 
@@ -58,15 +66,154 @@ const EXTRACTION_PROMPT = `당신은 개발 세션 로그를 구조화된 메모
 
 JSON만 출력하세요. 다른 텍스트는 포함하지 마세요.`;
 
+/**
+ * LLM completion 함수 시그니처
+ */
+export type CompletionFn = (options: {
+  model: string;
+  maxTokens: number;
+  system: string;
+  userMessage: string;
+}) => Promise<string>;
+
+export type ExtractorAuth = {
+  apiKey?: string;
+  authToken?: string;
+};
+
+/**
+ * CLI 실행으로 LLM 호출 (claude -p / codex)
+ * subscription 사용자용 — 별도 API key 불필요
+ */
+function createCliCompletionFn(cli: "claude" | "codex"): CompletionFn {
+  return async ({ system, userMessage }) => {
+    const fullPrompt = `${system}\n\n---\n\n${userMessage}`;
+
+    // 프롬프트가 길면 임시 파일로 전달
+    const tmpFile = join(tmpdir(), `axiommind-prompt-${randomUUID()}.txt`);
+    await writeFile(tmpFile, fullPrompt, "utf-8");
+
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        if (cli === "claude") {
+          // claude -p "prompt" --output-format text --max-turns 1
+          execFile(
+            "claude",
+            ["-p", `@${tmpFile}`, "--output-format", "text", "--max-turns", "1"],
+            { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
+            (err, stdout, stderr) => {
+              if (err) reject(new Error(`claude CLI failed: ${err.message}\n${stderr}`));
+              else resolve(stdout);
+            },
+          );
+        } else {
+          // codex exec - : stdin에서 프롬프트를 읽어 비대화형 실행
+          const outputFile = join(tmpdir(), `axiommind-codex-out-${randomUUID()}.txt`);
+          exec(
+            `codex exec -o "${outputFile}" - < "${tmpFile}"`,
+            { timeout: 120_000, maxBuffer: 10 * 1024 * 1024 },
+            (err, _stdout, stderr) => {
+              if (err) {
+                unlink(outputFile).catch(() => {});
+                reject(new Error(`codex CLI failed: ${err.message}\n${stderr}`));
+              } else {
+                readFile(outputFile, "utf-8")
+                  .then((content) => {
+                    unlink(outputFile).catch(() => {});
+                    resolve(content);
+                  })
+                  .catch((readErr) => {
+                    reject(new Error(`Failed to read codex output: ${readErr.message}`));
+                  });
+              }
+            },
+          );
+        }
+      });
+
+      return output.trim();
+    } finally {
+      await unlink(tmpFile).catch(() => {});
+    }
+  };
+}
+
+/**
+ * 사용 가능한 CLI 감지
+ */
+function detectAvailableCli(): "claude" | "codex" | null {
+  const { execFileSync } = require("node:child_process");
+  for (const cli of ["codex", "claude"] as const) {
+    try {
+      execFileSync("which", [cli], { timeout: 3000, stdio: "pipe" });
+      return cli;
+    } catch {
+      // not found
+    }
+  }
+  return null;
+}
+
 export class SessionExtractor {
-  private client: Anthropic;
+  private completionFn: CompletionFn;
   private model: string;
 
-  constructor(apiKey?: string, model: string = "claude-sonnet-4-20250514") {
-    this.client = new Anthropic({
-      apiKey: apiKey || process.env.ANTHROPIC_API_KEY,
-    });
-    this.model = model;
+  constructor(options?: {
+    auth?: ExtractorAuth;
+    completionFn?: CompletionFn;
+    model?: string;
+  }) {
+    this.model = options?.model || "claude-sonnet-4-20250514";
+
+    if (options?.completionFn) {
+      this.completionFn = options.completionFn;
+    } else {
+      // 1) Anthropic SDK 직접 사용 시도
+      const apiKey = options?.auth?.apiKey || process.env.ANTHROPIC_API_KEY;
+      const authToken = options?.auth?.authToken || process.env.ANTHROPIC_AUTH_TOKEN;
+
+      if (apiKey || authToken) {
+        const client = apiKey
+          ? new Anthropic({ apiKey })
+          : new Anthropic({ authToken: authToken! });
+
+        this.completionFn = async ({ model, maxTokens, system, userMessage }) => {
+          const response = await client.messages.create({
+            model,
+            max_tokens: maxTokens,
+            system,
+            messages: [{ role: "user", content: userMessage }],
+          });
+          const content = response.content[0];
+          if (content.type !== "text") {
+            throw new Error("Unexpected response type from LLM");
+          }
+          return content.text;
+        };
+      } else {
+        // 2) CLI fallback (claude -p / codex)
+        const cli = detectAvailableCli();
+        if (cli) {
+          this.completionFn = createCliCompletionFn(cli);
+        } else {
+          // 3) 최후 수단: SDK 기본 (env 자동 감지)
+          const client = new Anthropic();
+          this.completionFn = async ({ model, maxTokens, system, userMessage }) => {
+            const response = await client.messages.create({
+              model,
+              max_tokens: maxTokens,
+              system,
+              messages: [{ role: "user", content: userMessage }],
+            });
+            const content = response.content[0];
+            if (content.type !== "text") {
+              throw new Error("Unexpected response type from LLM");
+            }
+            return content.text;
+          };
+        }
+      }
+    }
   }
 
   async extract(sessionLog: string, date?: string, sessionId?: number): Promise<Session> {
@@ -74,26 +221,15 @@ export class SessionExtractor {
     const defaultDate = date || now.toISOString().split("T")[0];
     const defaultSessionId = sessionId || 1;
 
-    const response = await this.client.messages.create({
+    const text = await this.completionFn({
       model: this.model,
-      max_tokens: 4096,
+      maxTokens: 4096,
       system: EXTRACTION_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: `Date: ${defaultDate}\nSession ID: ${defaultSessionId}\n\n---\n\n${sessionLog}`,
-        },
-      ],
+      userMessage: `Date: ${defaultDate}\nSession ID: ${defaultSessionId}\n\n---\n\n${sessionLog}`,
     });
 
-    // 응답에서 텍스트 추출
-    const content = response.content[0];
-    if (content.type !== "text") {
-      throw new Error("Unexpected response type from LLM");
-    }
-
     // JSON 파싱
-    const jsonText = this.extractJson(content.text);
+    const jsonText = this.extractJson(text);
     const data = JSON.parse(jsonText) as Session;
 
     // 기본값 설정
