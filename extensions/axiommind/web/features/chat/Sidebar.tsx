@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -13,6 +13,13 @@ import {
   Search,
   Settings,
   Sparkles,
+  Download,
+  Loader2,
+  CheckCircle,
+  Timer,
+  Eye,
+  EyeOff,
+  Trash2,
 } from "lucide-react";
 import {
   sessionsListAtom,
@@ -22,7 +29,7 @@ import {
   type SessionSummary,
 } from "./_stores/session";
 import { sessionKeyAtom } from "./_stores/chat";
-import { fetchSessions } from "./_api/sessions";
+import { fetchSessions, importAllSessions, fetchImportStatuses, deleteSession } from "./_api/sessions";
 import { cn } from "@/lib/utils";
 
 type SidebarProps = {
@@ -95,20 +102,24 @@ const SessionItem = memo(
   ({
     session,
     isActive,
+    isImported,
     onSelect,
+    onDelete,
   }: {
     session: SessionSummary;
     isActive: boolean;
+    isImported: boolean;
     onSelect: () => void;
+    onDelete: () => void;
   }) => {
     return (
-      <button
-        onClick={onSelect}
+      <div
         className={cn(
-          "w-full group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
+          "w-full group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 cursor-pointer",
           "hover:bg-white/8 active:scale-[0.98]",
           isActive && "bg-white/10 hover:bg-white/12"
         )}
+        onClick={onSelect}
       >
         <MessageSquare
           className={cn(
@@ -125,13 +136,28 @@ const SessionItem = memo(
           >
             {session.title || `Session ${session.sessionId}`}
           </span>
-          {session.entryCount > 0 && (
-            <span className="text-[10px] text-white/30 group-hover:text-white/40">
-              {session.entryCount} messages
-            </span>
-          )}
+          <div className="flex items-center gap-2">
+            {session.entryCount > 0 && (
+              <span className="text-[10px] text-white/30 group-hover:text-white/40">
+                {session.entryCount} messages
+              </span>
+            )}
+            {isImported && (
+              <CheckCircle className="w-3 h-3 text-emerald-400/50" />
+            )}
+          </div>
         </div>
-      </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="opacity-0 group-hover:opacity-100 p-1.5 rounded-md hover:bg-red-500/20 transition-all"
+          title="Delete session"
+        >
+          <Trash2 className="w-3.5 h-3.5 text-white/30 hover:text-red-400" />
+        </button>
+      </div>
     );
   }
 );
@@ -149,22 +175,57 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
   const loadSessions = useSetAtom(loadSessionsAtom);
   const startLoading = useSetAtom(startLoadingSessionsAtom);
 
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
+  const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
+  const [hideCron, setHideCron] = useState(true);
+
+  // Import 상태 로드
+  const loadImportStatuses = useCallback(async () => {
+    try {
+      const result = await fetchImportStatuses();
+      const ids = new Set<string>();
+      for (const s of result.statuses) {
+        if (s.imported) ids.add(s.sessionFileId);
+      }
+      setImportedIds(ids);
+    } catch {
+      // 무시
+    }
+  }, []);
+
+  // 전체 import 핸들러
+  const handleImportAll = useCallback(async () => {
+    setIsImporting(true);
+    setImportResult(null);
+    try {
+      const result = await importAllSessions();
+      setImportResult({ imported: result.imported, skipped: result.skipped });
+      await loadImportStatuses();
+    } catch (error) {
+      console.error("Failed to import sessions:", error);
+    } finally {
+      setIsImporting(false);
+    }
+  }, [loadImportStatuses]);
+
   // 초기 세션 로드
   const handleLoadSessions = useCallback(async () => {
     startLoading();
     try {
-      const result = await fetchSessions({ limit: 100 });
+      const result = await fetchSessions({ limit: 100, excludeCron: hideCron });
       loadSessions(result.sessions);
     } catch (error) {
       console.error("Failed to load sessions:", error);
       loadSessions([]);
     }
-  }, [startLoading, loadSessions]);
+  }, [startLoading, loadSessions, hideCron]);
 
-  // 컴포넌트 마운트 시 세션 로드
+  // 컴포넌트 마운트 시 및 hideCron 변경 시 세션 + import 상태 로드
   useEffect(() => {
     handleLoadSessions();
-  }, [handleLoadSessions]);
+    loadImportStatuses();
+  }, [handleLoadSessions, loadImportStatuses]);
 
   // 세션 선택 핸들러
   const handleSelectSession = useCallback(
@@ -173,6 +234,20 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
       onSwitchSession(sessionKey);
     },
     [onSwitchSession]
+  );
+
+  // 세션 삭제 핸들러
+  const handleDeleteSession = useCallback(
+    async (session: SessionSummary) => {
+      if (!confirm(`Delete "${session.title || `Session ${session.sessionId}`}"?`)) return;
+      try {
+        await deleteSession(session.id);
+        handleLoadSessions();
+      } catch (error) {
+        console.error("Failed to delete session:", error);
+      }
+    },
+    [handleLoadSessions]
   );
 
   const groupedSessions = groupSessionsByDate(sessions);
@@ -208,7 +283,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
       >
         <div className="flex flex-col h-full w-[280px]">
           {/* Header */}
-          <div className="p-3 border-b border-white/5">
+          <div className="p-3 border-b border-white/5 space-y-2">
             {/* New Chat Button */}
             <button
               onClick={onNewSession}
@@ -225,6 +300,40 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
               </div>
               <span className="text-sm font-medium text-white/90">New Chat</span>
             </button>
+
+            {/* Import to Memory Button */}
+            <button
+              onClick={handleImportAll}
+              disabled={isImporting}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl",
+                "bg-emerald-500/10 hover:bg-emerald-500/20",
+                "border border-emerald-500/15 hover:border-emerald-500/25",
+                "transition-all duration-200 group disabled:opacity-50"
+              )}
+            >
+              <div className="p-1.5 rounded-lg bg-emerald-500/15 group-hover:bg-emerald-500/25 transition-colors">
+                {isImporting ? (
+                  <Loader2 className="w-4 h-4 text-emerald-400 animate-spin" />
+                ) : (
+                  <Download className="w-4 h-4 text-emerald-400" />
+                )}
+              </div>
+              <span className="text-sm font-medium text-emerald-300/80">
+                {isImporting ? "Importing..." : "Import to Memory"}
+              </span>
+            </button>
+
+            {/* Import Result */}
+            {importResult && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-xs text-emerald-400">
+                <CheckCircle className="w-3.5 h-3.5" />
+                <span>
+                  {importResult.imported} imported
+                  {importResult.skipped > 0 && `, ${importResult.skipped} skipped`}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Sessions List */}
@@ -265,7 +374,9 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
                             key={session.id}
                             session={session}
                             isActive={isActive}
+                            isImported={importedIds.has(session.id)}
                             onSelect={() => handleSelectSession(session)}
+                            onDelete={() => handleDeleteSession(session)}
                           />
                         );
                       })}
@@ -277,7 +388,18 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
           </div>
 
           {/* Footer */}
-          <div className="p-3 border-t border-white/5">
+          <div className="p-3 border-t border-white/5 space-y-1">
+            <button
+              onClick={() => setHideCron(prev => !prev)}
+              className={cn(
+                "w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg",
+                "text-xs hover:bg-white/5 transition-all duration-200",
+                hideCron ? "text-white/30 hover:text-white/50" : "text-amber-400/60 hover:text-amber-400/80"
+              )}
+            >
+              {hideCron ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              {hideCron ? "Show cron sessions" : "Hide cron sessions"}
+            </button>
             <button
               onClick={handleLoadSessions}
               disabled={isLoading}

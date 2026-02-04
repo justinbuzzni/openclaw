@@ -12,6 +12,7 @@ export type SessionSummary = {
   compileStatus: string;
   createdAt: string;
   entryCount: number;
+  isCron: boolean;
 };
 
 /**

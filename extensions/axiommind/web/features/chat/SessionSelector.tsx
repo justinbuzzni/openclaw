@@ -3,7 +3,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChevronDown, Clock, MessageSquare, Plus, Calendar, Check } from "lucide-react";
+import { ChevronDown, Clock, MessageSquare, Plus, Calendar, Check, Download, CheckCircle, Loader2 } from "lucide-react";
 import {
   sessionsListAtom,
   sessionsLoadingAtom,
@@ -13,7 +13,7 @@ import {
   type SessionSummary,
 } from "./_stores/session";
 import { sessionKeyAtom } from "./_stores/chat";
-import { fetchSessions } from "./_api/sessions";
+import { fetchSessions, importAllSessions, fetchImportStatuses, type ImportStatus } from "./_api/sessions";
 
 type SessionSelectorProps = {
   onSwitchSession: (sessionKey: string) => void;
@@ -77,6 +77,10 @@ const SessionSelector = ({ onSwitchSession, onNewSession }: SessionSelectorProps
   const loadSessions = useSetAtom(loadSessionsAtom);
   const startLoading = useSetAtom(startLoadingSessionsAtom);
 
+  const [isImporting, setIsImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
+  const [importStatuses, setImportStatuses] = useState<Map<string, boolean>>(new Map());
+
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // 드롭다운 외부 클릭 감지
@@ -108,14 +112,47 @@ const SessionSelector = ({ onSwitchSession, onNewSession }: SessionSelectorProps
     }
   }, [startLoading, loadSessions]);
 
+  // Import 상태 로드
+  const loadImportStatuses = useCallback(async () => {
+    try {
+      const result = await fetchImportStatuses();
+      const map = new Map<string, boolean>();
+      for (const s of result.statuses) {
+        map.set(s.sessionFileId, s.imported);
+      }
+      setImportStatuses(map);
+    } catch (error) {
+      console.error("Failed to load import statuses:", error);
+    }
+  }, []);
+
+  // 전체 import
+  const handleImportAll = useCallback(async () => {
+    setIsImporting(true);
+    setImportResult(null);
+    try {
+      const result = await importAllSessions();
+      setImportResult({ imported: result.imported, skipped: result.skipped });
+      // import 후 상태 갱신
+      await loadImportStatuses();
+    } catch (error) {
+      console.error("Failed to import sessions:", error);
+    } finally {
+      setIsImporting(false);
+    }
+  }, [loadImportStatuses]);
+
   // 드롭다운 열 때 세션 로드
   const handleToggle = useCallback(() => {
     const newState = !isOpen;
     setIsOpen(newState);
-    if (newState && sessions.length === 0) {
-      handleLoadSessions();
+    if (newState) {
+      if (sessions.length === 0) {
+        handleLoadSessions();
+      }
+      loadImportStatuses();
     }
-  }, [isOpen, setIsOpen, sessions.length, handleLoadSessions]);
+  }, [isOpen, setIsOpen, sessions.length, handleLoadSessions, loadImportStatuses]);
 
   // 세션 선택
   const handleSelectSession = useCallback(
@@ -165,14 +202,37 @@ const SessionSelector = ({ onSwitchSession, onNewSession }: SessionSelectorProps
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
               <h3 className="text-sm font-semibold text-white/90">Sessions</h3>
-              <button
-                onClick={handleNewSession}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary-500/20 hover:bg-primary-500/30 text-primary-400 text-xs font-medium transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                New
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleImportAll}
+                  disabled={isImporting}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-xs font-medium transition-colors disabled:opacity-50"
+                  title="Import all sessions to memory"
+                >
+                  {isImporting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  Import
+                </button>
+                <button
+                  onClick={handleNewSession}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary-500/20 hover:bg-primary-500/30 text-primary-400 text-xs font-medium transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  New
+                </button>
+              </div>
             </div>
+
+            {/* Import Result Banner */}
+            {importResult && (
+              <div className="px-4 py-2 bg-emerald-500/10 border-b border-white/10 text-xs text-emerald-400">
+                Imported {importResult.imported} sessions
+                {importResult.skipped > 0 && `, ${importResult.skipped} skipped`}
+              </div>
+            )}
 
             {/* Sessions List */}
             <div className="overflow-y-auto max-h-[320px] scrollbar-thin scrollbar-thumb-gray-700/50">
@@ -220,6 +280,9 @@ const SessionSelector = ({ onSwitchSession, onNewSession }: SessionSelectorProps
                                   {session.title || `Session ${session.sessionId}`}
                                 </span>
                                 {isActive && <Check className="w-3.5 h-3.5 text-primary-400" />}
+                                {importStatuses.get(session.id) && (
+                                  <CheckCircle className="w-3 h-3 text-emerald-400/60" />
+                                )}
                               </div>
                               <div className="flex items-center gap-3 mt-0.5">
                                 {session.timeRange && (
