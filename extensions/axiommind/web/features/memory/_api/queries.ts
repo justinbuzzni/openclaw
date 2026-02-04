@@ -18,6 +18,7 @@ export type DecisionWithEvidence = {
 };
 
 export type TaskWithContext = {
+  id: string;
   task: Record<string, unknown>;
   date: string;
   session: string;

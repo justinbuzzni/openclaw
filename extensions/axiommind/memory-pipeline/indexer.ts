@@ -97,6 +97,13 @@ export class MemoryIndexer {
         FOREIGN KEY (entry_id_2) REFERENCES entries(id)
       );
 
+      -- Import 추적 테이블
+      CREATE TABLE IF NOT EXISTS imported_sessions (
+        session_file_id TEXT PRIMARY KEY,
+        imported_at TEXT DEFAULT (datetime('now')),
+        entry_count INTEGER DEFAULT 0
+      );
+
       -- 인덱스
       CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(entry_type);
       CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session_id);
@@ -256,7 +263,7 @@ export class MemoryIndexer {
     if (!this.db) throw new Error("Database not initialized");
 
     const query = `
-      SELECT e.content, s.date, s.title as session_title
+      SELECT e.id, e.content, s.date, s.title as session_title
       FROM entries e
       JOIN sessions s ON e.session_id = s.id
       WHERE e.entry_type = 'task'
@@ -273,6 +280,7 @@ export class MemoryIndexer {
 
     const rows = this.db.prepare(query).all() as Record<string, unknown>[];
     return rows.map((r) => ({
+      id: r.id as string,
       task: JSON.parse(r.content as string),
       date: r.date as string,
       session: r.session_title as string,
@@ -618,6 +626,31 @@ export class MemoryIndexer {
     return { sessions, total };
   }
 
+  // === Import Tracking ===
+
+  isSessionImported(sessionFileId: string): boolean {
+    if (!this.db) return false;
+    const row = this.db.prepare("SELECT 1 FROM imported_sessions WHERE session_file_id = ?").get(sessionFileId);
+    return !!row;
+  }
+
+  markSessionImported(sessionFileId: string, entryCount: number): void {
+    if (!this.db) throw new Error("Database not initialized");
+    this.db.prepare(
+      "INSERT OR IGNORE INTO imported_sessions (session_file_id, entry_count) VALUES (?, ?)"
+    ).run(sessionFileId, entryCount);
+  }
+
+  getImportStatuses(sessionFileIds: string[]): Map<string, boolean> {
+    if (!this.db) return new Map();
+    const result = new Map<string, boolean>();
+    const stmt = this.db.prepare("SELECT session_file_id FROM imported_sessions WHERE session_file_id = ?");
+    for (const id of sessionFileIds) {
+      result.set(id, !!stmt.get(id));
+    }
+    return result;
+  }
+
   async close(): Promise<void> {
     if (this.db) {
       this.db.close();
@@ -644,6 +677,7 @@ type DecisionWithEvidence = {
 };
 
 type TaskWithContext = {
+  id: string;
   task: AnyEntry;
   date: string;
   session: string;

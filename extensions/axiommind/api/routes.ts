@@ -81,6 +81,9 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         if (apiPath === "sessions") {
           return await handleListSessions(req, res, url, pipeline);
         }
+        if (apiPath === "sessions/import-status") {
+          return await handleImportStatus(req, res, pipeline);
+        }
         if (apiPath.startsWith("sessions/") && apiPath.split("/").length === 2) {
           const sessionId = apiPath.replace("sessions/", "");
           return await handleGetSession(req, res, sessionId, pipeline);
@@ -100,6 +103,10 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         if (apiPath.startsWith("entries/")) {
           const entryId = apiPath.replace("entries/", "");
           return await handleDeleteEntry(req, res, entryId, pipeline);
+        }
+        if (apiPath.startsWith("sessions/") && apiPath.split("/").length === 2) {
+          const sessionId = apiPath.replace("sessions/", "");
+          return await handleDeleteSession(req, res, sessionId);
         }
       }
 
@@ -133,6 +140,14 @@ export function createApiHandler(pipeline: MemoryPipeline): HttpHandler {
         }
         if (apiPath === "scheduler/stop") {
           return await handleSchedulerStop(req, res, pipeline);
+        }
+        // Import API
+        if (apiPath === "sessions/import-all") {
+          return await handleImportAll(req, res, pipeline);
+        }
+        if (apiPath.match(/^sessions\/[^/]+\/import$/)) {
+          const sessionFileId = apiPath.split("/")[1];
+          return await handleImportSession(req, res, sessionFileId, pipeline);
         }
       }
 
@@ -677,6 +692,7 @@ type ChatSessionSummary = {
   compileStatus: string;
   createdAt: string;
   entryCount: number;
+  isCron: boolean;
 };
 
 /**
@@ -687,6 +703,7 @@ async function readSessionMetadata(filePath: string): Promise<{
   timestamp: string;
   messageCount: number;
   firstMessage?: string;
+  isCron: boolean;
 } | null> {
   try {
     const fileStream = fs.createReadStream(filePath);
@@ -698,6 +715,7 @@ async function readSessionMetadata(filePath: string): Promise<{
     let sessionMeta: { id: string; timestamp: string } | null = null;
     let messageCount = 0;
     let firstUserMessage: string | undefined;
+    let isCron = false;
 
     for await (const line of rl) {
       try {
@@ -720,6 +738,10 @@ async function readSessionMetadata(filePath: string): Promise<{
             if (Array.isArray(content)) {
               const textBlock = content.find((b: any) => b.type === "text");
               if (textBlock?.text) {
+                // cron 세션 감지
+                if ((textBlock.text as string).includes("[cron:")) {
+                  isCron = true;
+                }
                 // Memory Tools 프롬프트 제거하고 실제 메시지만 추출
                 let text = textBlock.text as string;
                 if (text.includes("[message_id:")) {
@@ -755,6 +777,7 @@ async function readSessionMetadata(filePath: string): Promise<{
       ...sessionMeta,
       messageCount,
       firstMessage: firstUserMessage,
+      isCron,
     };
   } catch {
     return null;
@@ -768,8 +791,9 @@ async function listChatSessions(options: {
   limit?: number;
   offset?: number;
   agentId?: string;
+  excludeCron?: boolean;
 }): Promise<{ sessions: ChatSessionSummary[]; total: number }> {
-  const { limit = 50, offset = 0, agentId = "axiommind" } = options;
+  const { limit = 50, offset = 0, agentId = "axiommind", excludeCron = false } = options;
 
   // 세션 디렉토리 경로
   const homeDir = os.homedir();
@@ -792,7 +816,35 @@ async function listChatSessions(options: {
   const total = files.length;
   const paginatedFiles = files.slice(offset, offset + limit);
 
-  // 각 파일에서 메타데이터 읽기
+  // 각 파일에서 메타데이터 읽기 (excludeCron 시 필터링 후 페이지네이션)
+  if (excludeCron) {
+    // cron 필터링이 있으면 전체 스캔 후 필터 → 페이지네이션
+    const allSessions: ChatSessionSummary[] = [];
+    let sessionIdx = 1;
+
+    for (const file of files) {
+      const meta = await readSessionMetadata(file.path);
+      if (meta) {
+        if (meta.isCron) { sessionIdx++; continue; }
+        const date = new Date(meta.timestamp);
+        allSessions.push({
+          id: meta.id,
+          date: date.toISOString().split("T")[0],
+          sessionId: sessionIdx,
+          title: meta.firstMessage || `Session ${sessionIdx}`,
+          timeRange: date.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
+          compileStatus: "active",
+          createdAt: meta.timestamp,
+          entryCount: meta.messageCount,
+          isCron: false,
+        });
+      }
+      sessionIdx++;
+    }
+
+    return { sessions: allSessions.slice(offset, offset + limit), total: allSessions.length };
+  }
+
   const sessions: ChatSessionSummary[] = [];
   let sessionIdx = offset + 1;
 
@@ -809,6 +861,7 @@ async function listChatSessions(options: {
         compileStatus: "active",
         createdAt: meta.timestamp,
         entryCount: meta.messageCount,
+        isCron: meta.isCron,
       });
     }
     sessionIdx++;
@@ -825,9 +878,10 @@ async function handleListSessions(
 ): Promise<boolean> {
   const limit = parseInt(url.searchParams.get("limit") || "50", 10);
   const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+  const excludeCron = url.searchParams.get("excludeCron") === "true";
 
   // JSONL 파일 기반 세션 목록 조회
-  const result = await listChatSessions({ limit, offset });
+  const result = await listChatSessions({ limit, offset, excludeCron });
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(result));
@@ -907,5 +961,88 @@ async function handleGetSession(
     messages,
     count: messages.length,
   }));
+  return true;
+}
+
+async function handleDeleteSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  sessionId: string
+): Promise<boolean> {
+  const homeDir = os.homedir();
+  const sessionPath = path.join(homeDir, ".openclaw", "agents", "axiommind", "sessions", `${sessionId}.jsonl`);
+
+  if (!fs.existsSync(sessionPath)) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Session not found" }));
+    return true;
+  }
+
+  try {
+    fs.unlinkSync(sessionPath);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ success: true, sessionId }));
+    return true;
+  } catch (error) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: `Failed to delete session: ${error}` }));
+    return true;
+  }
+}
+
+// === Import API Handlers ===
+
+async function handleImportStatus(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  if (!pipeline.sessionImporter) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "SessionImporter not initialized" }));
+    return true;
+  }
+
+  const statuses = await pipeline.sessionImporter.getImportStatuses();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ statuses }));
+  return true;
+}
+
+async function handleImportAll(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  if (!pipeline.sessionImporter) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "SessionImporter not initialized" }));
+    return true;
+  }
+
+  const result = await pipeline.sessionImporter.importAllPending();
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(result));
+  return true;
+}
+
+async function handleImportSession(
+  _req: IncomingMessage,
+  res: ServerResponse,
+  sessionFileId: string,
+  pipeline: MemoryPipeline
+): Promise<boolean> {
+  if (!pipeline.sessionImporter) {
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "SessionImporter not initialized" }));
+    return true;
+  }
+
+  const result = await pipeline.sessionImporter.importSession(sessionFileId);
+
+  res.writeHead(result.success ? 200 : 400, { "Content-Type": "application/json" });
+  res.end(JSON.stringify(result));
   return true;
 }

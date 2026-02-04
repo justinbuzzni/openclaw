@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { EventEmitter } from "node:events";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { SessionExtractor } from "./extractor.js";
+import { SessionExtractor, type ExtractorAuth } from "./extractor.js";
 import { IdrisGenerator } from "./idris-generator.js";
 import { IdrisValidator } from "./validator.js";
 import { MemoryIndexer } from "./indexer.js";
@@ -17,6 +17,7 @@ import { extractSessionFromContext } from "./context-extractor.js";
 import { ConflictResolver, type Resolution } from "./conflict-resolver.js";
 import { SimilarityChecker, type SimilarEntry } from "./similarity.js";
 import { EmbeddingManager } from "./embeddings.js";
+import { SessionImporter, type ImportResult, type ImportAllResult, type ImportStatus } from "./session-importer.js";
 import type {
   Session,
   ProcessResult,
@@ -66,6 +67,7 @@ export class MemoryPipeline extends EventEmitter {
   public conflictResolver: ConflictResolver | null = null;
   public similarityChecker: SimilarityChecker | null = null;
   public embeddings: EmbeddingManager;
+  public sessionImporter: SessionImporter | null = null;
 
   private idrisAvailable: boolean = false;
 
@@ -74,8 +76,12 @@ export class MemoryPipeline extends EventEmitter {
     this.api = api;
     this.dataDir = path.join(os.homedir(), ".openclaw", "axiommind");
 
-    // 컴포넌트 초기화
-    this.extractor = new SessionExtractor();
+    // LLM 인증: config API key → env vars → CLI (claude/codex) 순으로 자동 감지
+    const config = api.config as any;
+    const configApiKey = config?.models?.providers?.["anthropic"]?.apiKey;
+    const auth: ExtractorAuth = {};
+    if (configApiKey) auth.apiKey = configApiKey;
+    this.extractor = new SessionExtractor({ auth });
     this.generator = new IdrisGenerator(this.dataDir);
     this.validator = new IdrisValidator(this.dataDir);
     this.indexer = new MemoryIndexer(this.dataDir);
@@ -118,6 +124,13 @@ export class MemoryPipeline extends EventEmitter {
     } else {
       logger.warn("Database not available for GraduationManager");
     }
+
+    // SessionImporter 초기화
+    this.sessionImporter = new SessionImporter(
+      this.indexer,
+      (sessionLog, date, sessionId) => this.processSession(sessionLog, date, sessionId),
+    );
+    logger.info("SessionImporter initialized");
 
     logger.info(`AxiomMind data directory: ${this.dataDir}`);
   }
@@ -659,4 +672,4 @@ export class MemoryPipeline extends EventEmitter {
 }
 
 // Re-export types for external use
-export type { Conflict, Resolution, SimilarEntry };
+export type { Conflict, Resolution, SimilarEntry, ImportResult, ImportAllResult, ImportStatus };

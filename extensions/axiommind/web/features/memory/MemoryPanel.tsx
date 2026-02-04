@@ -1,17 +1,19 @@
 "use client";
 
-import { memo, useCallback, type ChangeEvent, type KeyboardEvent } from "react";
+import { memo, useCallback, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import Link from "next/link";
 import { useMemorySearch, usePendingTasks, useGraduationStats } from "./_hooks/useMemory";
 import SearchResults from "./SearchResults";
 import GraduationPipeline from "./GraduationPipeline";
+import MemoryEditor from "./MemoryEditor";
 import { cn } from "@/lib/utils";
 import { Search, ListTodo, Database, CheckCircle2, ChevronRight, BrainCircuit, LayoutDashboard } from "lucide-react";
 
 const MemoryPanel = () => {
   const { searchQuery, setSearchQuery, search, results, isLoading } = useMemorySearch();
-  const { data: tasks } = usePendingTasks();
+  const { data: tasks, refetch: refetchTasks } = usePendingTasks();
   const { data: graduationStats, isLoading: isLoadingStats, refetch: refetchStats } = useGraduationStats();
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
 
   const handleChange = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
@@ -99,7 +101,8 @@ const MemoryPanel = () => {
                 <div className="space-y-2">
                     {tasks.slice(0, 5).map((t, i) => (
                     <div
-                        key={i}
+                        key={t.id || i}
+                        onClick={() => t.id && setSelectedEntryId(t.id)}
                         className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-lg group hover:border-amber-500/30 transition-all cursor-pointer"
                     >
                         <div className="flex items-start justify-between">
@@ -120,6 +123,17 @@ const MemoryPanel = () => {
           </div>
         )}
       </div>
+
+      {/* Memory Editor Modal */}
+      {selectedEntryId && (
+        <MemoryEditor
+          entryId={selectedEntryId}
+          onClose={() => {
+            setSelectedEntryId(null);
+            refetchTasks();
+          }}
+        />
+      )}
     </div>
   );
 };
