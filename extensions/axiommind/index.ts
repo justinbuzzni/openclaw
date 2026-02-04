@@ -10,6 +10,10 @@
  */
 import type { OpenClawPluginApi, AgentContext } from "openclaw/plugin-sdk";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import * as readline from "node:readline";
 import { MemoryPipeline } from "./memory-pipeline/orchestrator.js";
 import { createSearchTool, createRecallTool, createSaveTool } from "./memory-pipeline/tools.js";
 import { createApiHandler } from "./api/routes.js";
@@ -26,6 +30,81 @@ import {
   getAutoScheduler,
   stopAutoScheduler,
 } from "./memory-pipeline/auto-scheduler.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * JSONL 세션 파일에서 대화 히스토리를 포맷된 텍스트로 로드
+ * (최근 N개 메시지만, 토큰 절약)
+ */
+async function loadSessionContext(sessionId: string, maxMessages = 20): Promise<string | null> {
+  const sessionsDir = path.join(os.homedir(), ".openclaw", "agents", "axiommind", "sessions");
+
+  // sessionId가 UUID이면 직접 파일 접근, 아니면 검색
+  let filePath: string | null = null;
+  if (UUID_RE.test(sessionId)) {
+    const candidate = path.join(sessionsDir, `${sessionId}.jsonl`);
+    if (fs.existsSync(candidate)) filePath = candidate;
+  }
+
+  if (!filePath) return null;
+
+  try {
+    const fileStream = fs.createReadStream(filePath);
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    const messages: Array<{ role: string; text: string }> = [];
+
+    for await (const line of rl) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type !== "message" || !entry.message) continue;
+
+        const msg = entry.message;
+        let text = "";
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === "text" && block.text) text += block.text;
+          }
+        } else if (typeof msg.content === "string") {
+          text = msg.content;
+        }
+
+        if (!text.trim()) continue;
+
+        // Memory Tools 프롬프트 부분 제거
+        if (msg.role === "user" && text.includes("## Memory Tools Available")) {
+          const parts = text.split(/\n\n+/);
+          for (let i = parts.length - 1; i >= 0; i--) {
+            const part = parts[i].trim();
+            if (part && !part.startsWith("##") && !part.startsWith("-") && !part.startsWith("A new session")) {
+              text = part;
+              break;
+            }
+          }
+        }
+        if (text.includes("[message_id:")) {
+          text = text.split("[message_id:")[0].trim();
+        }
+
+        messages.push({
+          role: msg.role === "user" ? "User" : "Assistant",
+          text: text.slice(0, 500), // 각 메시지 500자 제한
+        });
+      } catch { /* skip */ }
+    }
+
+    if (messages.length === 0) return null;
+
+    // 최근 N개만 사용
+    const recent = messages.slice(-maxMessages);
+    const formatted = recent.map(m => `${m.role}: ${m.text}`).join("\n\n");
+
+    return `## Previous Conversation (${recent.length} messages)\n\n${formatted}`;
+  } catch {
+    return null;
+  }
+}
 
 const plugin = {
   id: "plugin-axiommind",
@@ -91,7 +170,13 @@ const plugin = {
 
     // 2. 에이전트 시작 시 - 세션 프리로드 + 경량 컨텍스트 주입
     api.on("before_agent_start", async (event: { prompt?: string; sessionId?: string }, ctx: AgentContext) => {
-      const sessionId = event.sessionId || ctx.sessionId || "default";
+      // sessionKey에서 세션 ID 추출 (agent:axiommind:{uuid} 형식)
+      const sessionKey = (ctx as any).sessionKey as string | undefined;
+      const sessionKeyParts = sessionKey?.split(":") || [];
+      const sessionIdFromKey = sessionKeyParts.length >= 3 ? sessionKeyParts[sessionKeyParts.length - 1] : undefined;
+      const sessionId = sessionIdFromKey || event.sessionId || (ctx as any).sessionId || "default";
+
+      logger.info(`[AxiomMind] before_agent_start: sessionKey=${sessionKey}, sessionId=${sessionId}`);
 
       // 첫 메시지인지 확인
       const isFirstMessage = !sessionToolsShown.has(sessionId);
@@ -99,10 +184,26 @@ const plugin = {
         sessionToolsShown.add(sessionId);
       }
 
+      // UUID 세션에서 ctx.messages가 없으면 JSONL에서 대화 히스토리 로드
+      let historicalContext = "";
+      if (UUID_RE.test(sessionId) && (!ctx.messages || ctx.messages.length <= 1)) {
+        try {
+          const history = await loadSessionContext(sessionId);
+          if (history) {
+            historicalContext = history + "\n\n---\n\n";
+            logger.info(`[AxiomMind] Loaded historical context for session ${sessionId} (${history.length} chars)`);
+          } else {
+            logger.debug(`[AxiomMind] No historical context found for session ${sessionId}`);
+          }
+        } catch (err) {
+          logger.warn(`Failed to load historical context: ${err}`);
+        }
+      }
+
       if (!messageHandler) {
         // 폴백: 첫 메시지에만 기본 도구 안내
         return {
-          prependContext: generateLightMemoryContext(undefined, undefined, { includeToolsList: isFirstMessage }),
+          prependContext: historicalContext + generateLightMemoryContext(undefined, undefined, { includeToolsList: isFirstMessage }),
         };
       }
 
@@ -133,7 +234,7 @@ const plugin = {
           // 첫 번째 확인 질문만 컨텍스트에 추가
           const preloaded = messageHandler.getPreloadedContext(sessionId);
           return {
-            prependContext: generateLightMemoryContext(preloaded, result.memories, { includeToolsList: isFirstMessage }),
+            prependContext: historicalContext + generateLightMemoryContext(preloaded, result.memories, { includeToolsList: isFirstMessage }),
             // 확인 질문을 assistant 응답에 포함하도록 힌트
             systemNote: `Before answering, consider asking: "${confirmQuestions[0]}"`,
           };
@@ -142,12 +243,12 @@ const plugin = {
         // 경량 컨텍스트 생성
         const preloaded = messageHandler.getPreloadedContext(sessionId);
         return {
-          prependContext: generateLightMemoryContext(preloaded, result.memories, { includeToolsList: isFirstMessage }),
+          prependContext: historicalContext + generateLightMemoryContext(preloaded, result.memories, { includeToolsList: isFirstMessage }),
         };
       } catch (error) {
         logger.warn(`Memory retrieval failed: ${error}`);
         return {
-          prependContext: generateLightMemoryContext(undefined, undefined, { includeToolsList: isFirstMessage }),
+          prependContext: historicalContext + generateLightMemoryContext(undefined, undefined, { includeToolsList: isFirstMessage }),
         };
       }
     });
@@ -192,7 +293,7 @@ const plugin = {
         return false;
       }
 
-      logger.info(`[HTTP] Handling /ax route: ${pathname}`);
+      logger.info(`[HTTP] Handling /ax route: ${req.method} ${pathname}`);
 
       // 인증 체크
       const authResult = checkAuth(req, url);

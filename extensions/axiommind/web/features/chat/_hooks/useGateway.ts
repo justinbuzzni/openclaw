@@ -6,6 +6,7 @@ import {
   connectionStatusAtom,
   sessionKeyAtom,
   chatRunIdAtom,
+  messagesAtom,
   loadHistoryAtom,
   startStreamingAtom,
   updateStreamingDeltaAtom,
@@ -13,6 +14,7 @@ import {
   streamingErrorAtom,
   updateToolProgressAtom,
   type ToolProgress,
+  type Message,
 } from "../_stores/chat";
 
 // OpenClaw 게이트웨이 프로토콜 타입 정의
@@ -129,6 +131,7 @@ export function useGateway(options: UseGatewayOptions = {}) {
   const [connectionStatus, setConnectionStatus] = useAtom(connectionStatusAtom);
   const [sessionKey, setSessionKey] = useAtom(sessionKeyAtom);
   const chatRunId = useAtomValue(chatRunIdAtom);
+  const currentMessages = useAtomValue(messagesAtom);
 
   const loadHistory = useSetAtom(loadHistoryAtom);
   const startStreaming = useSetAtom(startStreamingAtom);
@@ -149,6 +152,9 @@ export function useGateway(options: UseGatewayOptions = {}) {
 
   // sessionKey를 ref로도 저장 (콜백에서 최신값 접근용)
   const sessionKeyRef = useRef(initialSessionKey);
+  // messages ref (send에서 최신 메시지 접근용)
+  const messagesRef = useRef<Message[]>([]);
+  messagesRef.current = currentMessages;
 
   // 이벤트 핸들러를 ref로 저장 (stale closure 방지)
   const handleChatEventRef = useRef<(payload: ChatEventPayload) => void>(() => {});
@@ -214,8 +220,24 @@ export function useGateway(options: UseGatewayOptions = {}) {
     (payload: ChatEventPayload) => {
       const currentSessionKey = sessionKeyRef.current;
       if (payload.sessionKey !== currentSessionKey) {
-        console.log("[chat event] sessionKey mismatch:", payload.sessionKey, "vs", currentSessionKey);
-        return;
+        // Gateway가 세션키를 리다이렉트한 경우 (예: UUID → main) 수용
+        const currentId = currentSessionKey.split(":").pop() || "";
+        const isCurrentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentId);
+        const isCurrentNew = currentId.startsWith("new-");
+        if (isCurrentUuid || isCurrentNew) {
+          console.log("[chat event] sessionKey redirect accepted:", payload.sessionKey);
+          setSessionKey(payload.sessionKey);
+          sessionKeyRef.current = payload.sessionKey;
+          // URL도 업데이트
+          if (typeof window !== "undefined") {
+            const url = new URL(window.location.href);
+            url.searchParams.set("session", payload.sessionKey);
+            window.history.replaceState({}, "", url.toString());
+          }
+        } else {
+          console.log("[chat event] sessionKey mismatch:", payload.sessionKey, "vs", currentSessionKey);
+          return;
+        }
       }
 
       console.log("[chat event]", payload.state, payload);
@@ -244,14 +266,21 @@ export function useGateway(options: UseGatewayOptions = {}) {
         }
       }
     },
-    [updateStreamingDelta, finishStreaming, streamingError, fetchHistory]
+    [setSessionKey, updateStreamingDelta, finishStreaming, streamingError, fetchHistory]
   );
 
   // agent 이벤트 처리 (도구 진행 상황)
   const handleAgentEvent = useCallback(
     (payload: AgentEventPayload) => {
       const currentSessionKey = sessionKeyRef.current;
-      if (payload.sessionKey && payload.sessionKey !== currentSessionKey) return;
+      if (payload.sessionKey && payload.sessionKey !== currentSessionKey) {
+        // sessionKey 리다이렉트 수용 (chat event에서 이미 업데이트됨)
+        // 아직 업데이트 안된 경우 무시하지 않고 통과
+        const currentId = currentSessionKey.split(":").pop() || "";
+        const isCurrentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentId);
+        const isCurrentNew = currentId.startsWith("new-");
+        if (!isCurrentUuid && !isCurrentNew) return;
+      }
 
       console.log("[agent event]", payload.stream, payload);
 
@@ -448,10 +477,26 @@ export function useGateway(options: UseGatewayOptions = {}) {
       // 스트리밍 시작 상태 설정
       startStreaming(runId);
 
+      // 이전 대화가 있는 세션에서 보내는 경우, 대화 컨텍스트를 메시지에 포함
+      let effectiveMessage = message.trim();
+      const msgs = messagesRef.current;
+      if (msgs.length > 0) {
+        // 현재 메시지를 제외한 이전 메시지들로 컨텍스트 생성
+        const prevMessages = msgs.filter(m => m.role === "user" || m.role === "assistant");
+        if (prevMessages.length > 0) {
+          const contextLines = prevMessages.slice(-20).map(m => {
+            const role = m.role === "user" ? "User" : "Assistant";
+            const text = (m.content || "").slice(0, 300);
+            return `${role}: ${text}`;
+          });
+          effectiveMessage = `[Previous conversation context]\n${contextLines.join("\n")}\n[End of context]\n\n${effectiveMessage}`;
+        }
+      }
+
       try {
         const res = await sendRequest("chat.send", {
           sessionKey: currentSessionKey,
-          message: message.trim(),
+          message: effectiveMessage,
           idempotencyKey: runId,
           deliver: false,
         });
