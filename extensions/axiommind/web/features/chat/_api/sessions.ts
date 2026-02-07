@@ -6,6 +6,7 @@ export type ListSessionsOptions = {
   dateFrom?: string;
   dateTo?: string;
   excludeCron?: boolean;
+  agentId?: string;
 };
 
 export type ListSessionsResponse = {
@@ -17,7 +18,7 @@ export type ListSessionsResponse = {
  * 세션 목록 조회
  */
 export async function fetchSessions(
-  options: ListSessionsOptions = {}
+  options: ListSessionsOptions = {},
 ): Promise<ListSessionsResponse> {
   const params = new URLSearchParams();
 
@@ -26,6 +27,7 @@ export async function fetchSessions(
   if (options.dateFrom) params.set("dateFrom", options.dateFrom);
   if (options.dateTo) params.set("dateTo", options.dateTo);
   if (options.excludeCron) params.set("excludeCron", "true");
+  if (options.agentId) params.set("agentId", options.agentId);
 
   const queryString = params.toString();
   const url = `/ax/api/sessions${queryString ? `?${queryString}` : ""}`;

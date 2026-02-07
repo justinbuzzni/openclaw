@@ -5,8 +5,8 @@
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
+import * as path from "node:path";
 import * as readline from "node:readline";
 import type { MemoryPipeline } from "../memory-pipeline/orchestrator.js";
 import type { EntryType, MemoryStage, DemotionReason, AnyEntry } from "../memory-pipeline/types.js";
@@ -167,7 +167,7 @@ async function handleSearch(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const query = url.searchParams.get("q") || "";
   const types = url.searchParams.getAll("types") as EntryType[];
@@ -200,7 +200,7 @@ async function handleDecisions(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const dateFrom = url.searchParams.get("dateFrom") || undefined;
 
@@ -214,7 +214,7 @@ async function handleDecisions(
 async function handleTasks(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const tasks = await pipeline.search.getPendingTasks();
 
@@ -226,7 +226,7 @@ async function handleTasks(
 async function handleProcess(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   // POST body 읽기
   const body = await readBody(req);
@@ -240,7 +240,7 @@ async function handleProcess(
   const result = await pipeline.processSession(
     body.sessionLog as string,
     body.date as string | undefined,
-    body.sessionId as number | undefined
+    body.sessionId as number | undefined,
   );
 
   res.writeHead(200, { "Content-Type": "application/json" });
@@ -270,7 +270,7 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
 async function handleGraduationStats(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const stats = await pipeline.getGraduationStats();
 
@@ -283,7 +283,7 @@ async function handleGraduationHistory(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const limit = parseInt(url.searchParams.get("limit") || "10", 10);
 
@@ -297,7 +297,7 @@ async function handleGraduationHistory(
 async function handlePromote(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const body = await readBody(req);
 
@@ -310,13 +310,15 @@ async function handlePromote(
   const validStages: MemoryStage[] = ["candidate", "verified", "certified"];
   if (!validStages.includes(body.targetStage as MemoryStage)) {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Invalid targetStage. Must be: candidate, verified, or certified" }));
+    res.end(
+      JSON.stringify({ error: "Invalid targetStage. Must be: candidate, verified, or certified" }),
+    );
     return true;
   }
 
   const result = await pipeline.promoteEntry(
     body.entryId as string,
-    body.targetStage as MemoryStage
+    body.targetStage as MemoryStage,
   );
 
   res.writeHead(result.success ? 200 : 400, { "Content-Type": "application/json" });
@@ -327,7 +329,7 @@ async function handlePromote(
 async function handleDemote(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const body = await readBody(req);
 
@@ -338,10 +340,20 @@ async function handleDemote(
   }
 
   const reason = (body.reason as DemotionReason) || "user_demotion";
-  const validReasons: DemotionReason[] = ["unused", "conflict_detected", "compile_failed", "user_demotion"];
+  const validReasons: DemotionReason[] = [
+    "unused",
+    "conflict_detected",
+    "compile_failed",
+    "user_demotion",
+  ];
   if (!validReasons.includes(reason)) {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Invalid reason. Must be: unused, conflict_detected, compile_failed, or user_demotion" }));
+    res.end(
+      JSON.stringify({
+        error:
+          "Invalid reason. Must be: unused, conflict_detected, compile_failed, or user_demotion",
+      }),
+    );
     return true;
   }
 
@@ -355,19 +367,21 @@ async function handleDemote(
 async function handleRunAutoPromotions(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const results = await pipeline.runAutoPromotions();
 
   const successCount = results.filter((r) => r.success).length;
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({
-    total: results.length,
-    success: successCount,
-    failed: results.length - successCount,
-    results,
-  }));
+  res.end(
+    JSON.stringify({
+      total: results.length,
+      success: successCount,
+      failed: results.length - successCount,
+      results,
+    }),
+  );
   return true;
 }
 
@@ -376,7 +390,7 @@ async function handleRunAutoPromotions(
 async function handleGetConflicts(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const conflicts = await pipeline.getUnresolvedConflicts();
 
@@ -388,7 +402,7 @@ async function handleGetConflicts(
 async function handleResolveConflict(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const body = await readBody(req);
 
@@ -401,16 +415,18 @@ async function handleResolveConflict(
   const validResolutions = ["keep_newer", "keep_older", "merge", "manual"];
   if (!validResolutions.includes(body.resolution as string)) {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({
-      error: "Invalid resolution. Must be: keep_newer, keep_older, merge, or manual"
-    }));
+    res.end(
+      JSON.stringify({
+        error: "Invalid resolution. Must be: keep_newer, keep_older, merge, or manual",
+      }),
+    );
     return true;
   }
 
   await pipeline.resolveConflict(
     body.conflictId as string,
     body.resolution as string,
-    body.keepEntryId as string | undefined
+    body.keepEntryId as string | undefined,
   );
 
   res.writeHead(200, { "Content-Type": "application/json" });
@@ -423,7 +439,7 @@ async function handleResolveConflict(
 async function handleSchedulerStats(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const scheduler = getAutoScheduler(pipeline);
   const stats = scheduler.getStats();
@@ -436,7 +452,7 @@ async function handleSchedulerStats(
 async function handleTriggerPromotion(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const scheduler = getAutoScheduler(pipeline);
   const results = await scheduler.triggerPromotionCheck();
@@ -444,34 +460,38 @@ async function handleTriggerPromotion(
   const successCount = results.filter((r) => r.success).length;
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({
-    total: results.length,
-    success: successCount,
-    failed: results.length - successCount,
-    results,
-  }));
+  res.end(
+    JSON.stringify({
+      total: results.length,
+      success: successCount,
+      failed: results.length - successCount,
+      results,
+    }),
+  );
   return true;
 }
 
 async function handleTriggerConsolidation(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const scheduler = getAutoScheduler(pipeline);
   const consolidatedCount = await scheduler.triggerConsolidation();
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({
-    consolidated: consolidatedCount,
-  }));
+  res.end(
+    JSON.stringify({
+      consolidated: consolidatedCount,
+    }),
+  );
   return true;
 }
 
 async function handleSchedulerStart(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const scheduler = getAutoScheduler(pipeline);
   scheduler.start();
@@ -484,7 +504,7 @@ async function handleSchedulerStart(
 async function handleSchedulerStop(
   req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   stopAutoScheduler();
 
@@ -499,7 +519,7 @@ async function handleListEntries(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const limit = parseInt(url.searchParams.get("limit") || "20", 10);
   const offset = parseInt(url.searchParams.get("offset") || "0", 10);
@@ -530,7 +550,7 @@ async function handleGetEntry(
   req: IncomingMessage,
   res: ServerResponse,
   entryId: string,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const entry = await pipeline.getEntry(entryId);
 
@@ -549,7 +569,7 @@ async function handleUpdateEntry(
   req: IncomingMessage,
   res: ServerResponse,
   entryId: string,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const body = await readBody(req);
 
@@ -579,7 +599,7 @@ async function handleDeleteEntry(
   req: IncomingMessage,
   res: ServerResponse,
   entryId: string,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const success = await pipeline.deleteEntry(entryId);
 
@@ -597,7 +617,7 @@ async function handleDeleteEntry(
 async function handleEmbeddingsInfo(
   _req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const providerInfo = pipeline.embeddings.getProviderInfo();
   const cacheStats = pipeline.embeddings.getCacheStats();
@@ -610,7 +630,7 @@ async function handleEmbeddingsInfo(
       model: providerInfo.model || "EmbeddingGemma-308M (default)",
       description:
         "EmbeddingGemma is a multilingual embedding model supporting 100+ languages including Korean, Chinese, Japanese, and more.",
-    })
+    }),
   );
   return true;
 }
@@ -620,7 +640,7 @@ async function handleEmbeddingsInfo(
 async function handleDashboardStats(
   _req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   // Graduation stats
   const graduationStats = await pipeline.getGraduationStats();
@@ -634,20 +654,22 @@ async function handleDashboardStats(
   const cacheStats = pipeline.embeddings.getCacheStats();
 
   // Recent entries count by type
-  const entriesByType = await pipeline.indexer?.getEntriesByType() || {};
+  const entriesByType = (await pipeline.indexer?.getEntriesByType()) || {};
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({
-    graduation: graduationStats,
-    scheduler: schedulerStats,
-    embedding: {
-      provider: embeddingInfo.name,
-      model: embeddingInfo.model || "unknown",
-      available: embeddingInfo.available,
-      cacheSize: cacheStats.size,
-    },
-    entriesByType,
-  }));
+  res.end(
+    JSON.stringify({
+      graduation: graduationStats,
+      scheduler: schedulerStats,
+      embedding: {
+        provider: embeddingInfo.name,
+        model: embeddingInfo.model || "unknown",
+        available: embeddingInfo.available,
+        cacheSize: cacheStats.size,
+      },
+      entriesByType,
+    }),
+  );
   return true;
 }
 
@@ -655,11 +677,11 @@ async function handleTopAccessed(
   _req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const limit = parseInt(url.searchParams.get("limit") || "10", 10);
 
-  const entries = await pipeline.indexer?.getTopAccessedEntries(limit) || [];
+  const entries = (await pipeline.indexer?.getTopAccessedEntries(limit)) || [];
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ entries }));
@@ -670,7 +692,7 @@ async function handleRecentActivity(
   _req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const limit = parseInt(url.searchParams.get("limit") || "20", 10);
 
@@ -754,7 +776,12 @@ async function readSessionMetadata(filePath: string): Promise<{
                   // 마지막 non-empty 파트가 실제 메시지
                   for (let i = parts.length - 1; i >= 0; i--) {
                     const part = parts[i].trim();
-                    if (part && !part.startsWith("##") && !part.startsWith("-") && !part.startsWith("A new session")) {
+                    if (
+                      part &&
+                      !part.startsWith("##") &&
+                      !part.startsWith("-") &&
+                      !part.startsWith("A new session")
+                    ) {
                       firstUserMessage = part.slice(0, 100);
                       break;
                     }
@@ -793,25 +820,44 @@ async function listChatSessions(options: {
   agentId?: string;
   excludeCron?: boolean;
 }): Promise<{ sessions: ChatSessionSummary[]; total: number }> {
-  const { limit = 50, offset = 0, agentId = "axiommind", excludeCron = false } = options;
+  const { limit = 50, offset = 0, agentId, excludeCron = false } = options;
 
-  // 세션 디렉토리 경로
   const homeDir = os.homedir();
-  const sessionsDir = path.join(homeDir, ".openclaw", "agents", agentId, "sessions");
+  const agentsBaseDir = path.join(homeDir, ".openclaw", "agents");
 
-  if (!fs.existsSync(sessionsDir)) {
-    return { sessions: [], total: 0 };
+  // agentId가 지정되면 해당 에이전트만, 없으면 모든 에이전트 디렉토리 검색
+  let agentDirs: string[];
+  if (agentId) {
+    agentDirs = [agentId];
+  } else {
+    try {
+      agentDirs = fs.readdirSync(agentsBaseDir).filter((d) => {
+        const sessDir = path.join(agentsBaseDir, d, "sessions");
+        return fs.existsSync(sessDir) && fs.statSync(sessDir).isDirectory();
+      });
+    } catch {
+      return { sessions: [], total: 0 };
+    }
   }
 
-  // JSONL 파일 목록
-  const files = fs.readdirSync(sessionsDir)
-    .filter(f => f.endsWith(".jsonl"))
-    .map(f => ({
-      name: f,
-      path: path.join(sessionsDir, f),
-      mtime: fs.statSync(path.join(sessionsDir, f)).mtime,
-    }))
-    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()); // 최신순
+  // 모든 에이전트 디렉토리에서 JSONL 파일 수집
+  let files: Array<{ name: string; path: string; mtime: Date }> = [];
+  for (const dir of agentDirs) {
+    const sessionsDir = path.join(agentsBaseDir, dir, "sessions");
+    if (!fs.existsSync(sessionsDir)) continue;
+    const dirFiles = fs
+      .readdirSync(sessionsDir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({
+        name: f,
+        path: path.join(sessionsDir, f),
+        mtime: fs.statSync(path.join(sessionsDir, f)).mtime,
+      }));
+    files = files.concat(dirFiles);
+  }
+
+  // 최신순 정렬
+  files.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
 
   const total = files.length;
   const paginatedFiles = files.slice(offset, offset + limit);
@@ -825,7 +871,10 @@ async function listChatSessions(options: {
     for (const file of files) {
       const meta = await readSessionMetadata(file.path);
       if (meta) {
-        if (meta.isCron) { sessionIdx++; continue; }
+        if (meta.isCron) {
+          sessionIdx++;
+          continue;
+        }
         const date = new Date(meta.timestamp);
         allSessions.push({
           id: meta.id,
@@ -874,14 +923,15 @@ async function handleListSessions(
   _req: IncomingMessage,
   res: ServerResponse,
   url: URL,
-  _pipeline: MemoryPipeline
+  _pipeline: MemoryPipeline,
 ): Promise<boolean> {
   const limit = parseInt(url.searchParams.get("limit") || "50", 10);
   const offset = parseInt(url.searchParams.get("offset") || "0", 10);
   const excludeCron = url.searchParams.get("excludeCron") === "true";
+  const agentId = url.searchParams.get("agentId") || undefined;
 
   // JSONL 파일 기반 세션 목록 조회
-  const result = await listChatSessions({ limit, offset, excludeCron });
+  const result = await listChatSessions({ limit, offset, excludeCron, agentId });
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(result));
@@ -891,12 +941,14 @@ async function handleListSessions(
 /**
  * JSONL 세션 파일에서 메시지 히스토리 읽기
  */
-async function readSessionMessages(filePath: string): Promise<Array<{
-  id: string;
-  role: string;
-  content: Array<{ type: string; text?: string }>;
-  timestamp: number;
-}>> {
+async function readSessionMessages(filePath: string): Promise<
+  Array<{
+    id: string;
+    role: string;
+    content: Array<{ type: string; text?: string }>;
+    timestamp: number;
+  }>
+> {
   const messages: Array<{
     id: string;
     role: string;
@@ -936,17 +988,36 @@ async function readSessionMessages(filePath: string): Promise<Array<{
   return messages;
 }
 
+/**
+ * 세션 파일을 모든 에이전트 디렉토리에서 검색
+ */
+function findSessionFile(homeDir: string, sessionId: string): string | null {
+  const agentsBaseDir = path.join(homeDir, ".openclaw", "agents");
+  try {
+    const agentDirs = fs.readdirSync(agentsBaseDir);
+    for (const dir of agentDirs) {
+      const sessionPath = path.join(agentsBaseDir, dir, "sessions", `${sessionId}.jsonl`);
+      if (fs.existsSync(sessionPath)) {
+        return sessionPath;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
 async function handleGetSession(
   _req: IncomingMessage,
   res: ServerResponse,
   sessionId: string,
-  _pipeline: MemoryPipeline
+  _pipeline: MemoryPipeline,
 ): Promise<boolean> {
-  // 세션 파일 경로
+  // 세션 파일 경로 (모든 에이전트 디렉토리에서 검색)
   const homeDir = os.homedir();
-  const sessionPath = path.join(homeDir, ".openclaw", "agents", "axiommind", "sessions", `${sessionId}.jsonl`);
+  const sessionPath = findSessionFile(homeDir, sessionId);
 
-  if (!fs.existsSync(sessionPath)) {
+  if (!sessionPath) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Session not found" }));
     return true;
@@ -956,23 +1027,25 @@ async function handleGetSession(
   const messages = await readSessionMessages(sessionPath);
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({
-    sessionId,
-    messages,
-    count: messages.length,
-  }));
+  res.end(
+    JSON.stringify({
+      sessionId,
+      messages,
+      count: messages.length,
+    }),
+  );
   return true;
 }
 
 async function handleDeleteSession(
   _req: IncomingMessage,
   res: ServerResponse,
-  sessionId: string
+  sessionId: string,
 ): Promise<boolean> {
   const homeDir = os.homedir();
-  const sessionPath = path.join(homeDir, ".openclaw", "agents", "axiommind", "sessions", `${sessionId}.jsonl`);
+  const sessionPath = findSessionFile(homeDir, sessionId);
 
-  if (!fs.existsSync(sessionPath)) {
+  if (!sessionPath) {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Session not found" }));
     return true;
@@ -995,7 +1068,7 @@ async function handleDeleteSession(
 async function handleImportStatus(
   _req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   if (!pipeline.sessionImporter) {
     res.writeHead(500, { "Content-Type": "application/json" });
@@ -1013,7 +1086,7 @@ async function handleImportStatus(
 async function handleImportAll(
   _req: IncomingMessage,
   res: ServerResponse,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   if (!pipeline.sessionImporter) {
     res.writeHead(500, { "Content-Type": "application/json" });
@@ -1032,7 +1105,7 @@ async function handleImportSession(
   _req: IncomingMessage,
   res: ServerResponse,
   sessionFileId: string,
-  pipeline: MemoryPipeline
+  pipeline: MemoryPipeline,
 ): Promise<boolean> {
   if (!pipeline.sessionImporter) {
     res.writeHead(500, { "Content-Type": "application/json" });

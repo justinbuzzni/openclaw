@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useCallback, useRef } from "react";
 import { useAtom, useSetAtom, useAtomValue } from "jotai";
+import { useEffect, useCallback, useRef } from "react";
 import {
   connectionStatusAtom,
   sessionKeyAtom,
@@ -16,6 +16,7 @@ import {
   type ToolProgress,
   type Message,
 } from "../_stores/chat";
+import { sessionsRefreshTriggerAtom } from "../_stores/session";
 
 // OpenClaw 게이트웨이 프로토콜 타입 정의
 type GatewayClientId = "openclaw-control-ui";
@@ -139,6 +140,7 @@ export function useGateway(options: UseGatewayOptions = {}) {
   const finishStreaming = useSetAtom(finishStreamingAtom);
   const streamingError = useSetAtom(streamingErrorAtom);
   const updateToolProgress = useSetAtom(updateToolProgressAtom);
+  const setSessionsRefreshTrigger = useSetAtom(sessionsRefreshTriggerAtom);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -183,7 +185,7 @@ export function useGateway(options: UseGatewayOptions = {}) {
           id,
           method,
           params,
-        })
+        }),
       );
 
       // 타임아웃 설정 (30초)
@@ -222,7 +224,8 @@ export function useGateway(options: UseGatewayOptions = {}) {
       if (payload.sessionKey !== currentSessionKey) {
         // Gateway가 세션키를 리다이렉트한 경우 (예: UUID → main) 수용
         const currentId = currentSessionKey.split(":").pop() || "";
-        const isCurrentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentId);
+        const isCurrentUuid =
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentId);
         const isCurrentNew = currentId.startsWith("new-");
         if (isCurrentUuid || isCurrentNew) {
           console.log("[chat event] sessionKey redirect accepted:", payload.sessionKey);
@@ -235,7 +238,12 @@ export function useGateway(options: UseGatewayOptions = {}) {
             window.history.replaceState({}, "", url.toString());
           }
         } else {
-          console.log("[chat event] sessionKey mismatch:", payload.sessionKey, "vs", currentSessionKey);
+          console.log(
+            "[chat event] sessionKey mismatch:",
+            payload.sessionKey,
+            "vs",
+            currentSessionKey,
+          );
           return;
         }
       }
@@ -254,6 +262,8 @@ export function useGateway(options: UseGatewayOptions = {}) {
           finishStreaming({ runId: payload.runId, message: payload.message });
           // 히스토리 리로드해서 최신 상태 반영
           fetchHistory();
+          // 사이드바 세션 목록 새로고침 트리거
+          setSessionsRefreshTrigger((prev) => prev + 1);
           break;
         }
         case "aborted": {
@@ -266,7 +276,14 @@ export function useGateway(options: UseGatewayOptions = {}) {
         }
       }
     },
-    [setSessionKey, updateStreamingDelta, finishStreaming, streamingError, fetchHistory]
+    [
+      setSessionKey,
+      updateStreamingDelta,
+      finishStreaming,
+      streamingError,
+      fetchHistory,
+      setSessionsRefreshTrigger,
+    ],
   );
 
   // agent 이벤트 처리 (도구 진행 상황)
@@ -277,7 +294,8 @@ export function useGateway(options: UseGatewayOptions = {}) {
         // sessionKey 리다이렉트 수용 (chat event에서 이미 업데이트됨)
         // 아직 업데이트 안된 경우 무시하지 않고 통과
         const currentId = currentSessionKey.split(":").pop() || "";
-        const isCurrentUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentId);
+        const isCurrentUuid =
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(currentId);
         const isCurrentNew = currentId.startsWith("new-");
         if (!isCurrentUuid && !isCurrentNew) return;
       }
@@ -309,7 +327,7 @@ export function useGateway(options: UseGatewayOptions = {}) {
         }
       }
     },
-    [updateToolProgress]
+    [updateToolProgress],
   );
 
   // 핸들러 refs 업데이트
@@ -477,26 +495,10 @@ export function useGateway(options: UseGatewayOptions = {}) {
       // 스트리밍 시작 상태 설정
       startStreaming(runId);
 
-      // 이전 대화가 있는 세션에서 보내는 경우, 대화 컨텍스트를 메시지에 포함
-      let effectiveMessage = message.trim();
-      const msgs = messagesRef.current;
-      if (msgs.length > 0) {
-        // 현재 메시지를 제외한 이전 메시지들로 컨텍스트 생성
-        const prevMessages = msgs.filter(m => m.role === "user" || m.role === "assistant");
-        if (prevMessages.length > 0) {
-          const contextLines = prevMessages.slice(-20).map(m => {
-            const role = m.role === "user" ? "User" : "Assistant";
-            const text = (m.content || "").slice(0, 300);
-            return `${role}: ${text}`;
-          });
-          effectiveMessage = `[Previous conversation context]\n${contextLines.join("\n")}\n[End of context]\n\n${effectiveMessage}`;
-        }
-      }
-
       try {
         const res = await sendRequest("chat.send", {
           sessionKey: currentSessionKey,
-          message: effectiveMessage,
+          message: message.trim(),
           idempotencyKey: runId,
           deliver: false,
         });
@@ -509,7 +511,7 @@ export function useGateway(options: UseGatewayOptions = {}) {
         return null;
       }
     },
-    [sendRequest, startStreaming, streamingError]
+    [sendRequest, startStreaming, streamingError],
   );
 
   // 실행 중지
@@ -556,7 +558,9 @@ export function useGateway(options: UseGatewayOptions = {}) {
       // 3. 세션 히스토리 로드
       // UUID 형식인지 확인 (예: agent:axiommind:73571139-e1a1-4351-ac97-6c99fcb9c8b7)
       const sessionId = newSessionKey.split(":").pop() || "";
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId);
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        sessionId,
+      );
 
       if (isUuid) {
         // JSONL 파일에서 직접 히스토리 로드
@@ -580,15 +584,34 @@ export function useGateway(options: UseGatewayOptions = {}) {
       // 기존 방식으로 히스토리 로드 (게이트웨이 API)
       await fetchHistory();
     },
-    [setSessionKey, fetchHistory, loadHistory]
+    [setSessionKey, fetchHistory, loadHistory],
   );
 
-  // 새 세션 생성
-  const createNewSession = useCallback(() => {
-    const timestamp = Date.now();
-    const newSessionKey = `agent:axiommind:new-${timestamp}`;
-    switchSession(newSessionKey);
-  }, [switchSession]);
+  // 새 세션 생성 (/new 명령어를 게이트웨이에 전송)
+  const createNewSession = useCallback(async () => {
+    // 즉시 메시지 초기화 (이전 세션 컨텍스트 방지)
+    loadHistory({ messages: [], thinkingLevel: null });
+
+    // /new 명령어를 게이트웨이에 전송하여 새 세션 생성
+    const currentSessionKey = sessionKeyRef.current;
+    if (!currentSessionKey) return;
+
+    const runId = generateUUID();
+    startStreaming(runId);
+
+    try {
+      await sendRequest("chat.send", {
+        sessionKey: currentSessionKey,
+        message: "/new",
+        idempotencyKey: runId,
+        deliver: false,
+      });
+      // handleChatEvent에서 새 sessionKey로 리다이렉트됨
+    } catch (error) {
+      console.error("Failed to create new session:", error);
+      streamingError({ runId, error: String(error) });
+    }
+  }, [sendRequest, loadHistory, startStreaming, streamingError]);
 
   return {
     connectionStatus,

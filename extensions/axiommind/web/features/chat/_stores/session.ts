@@ -51,3 +51,8 @@ export const startLoadingSessionsAtom = atom(null, (_get, set) => {
 export const toggleSessionsPanelAtom = atom(null, (get, set) => {
   set(sessionsPanelOpenAtom, !get(sessionsPanelOpenAtom));
 });
+
+/**
+ * 세션 목록 새로고침 트리거 (값이 변경되면 Sidebar가 새로고침)
+ */
+export const sessionsRefreshTriggerAtom = atom(0);

@@ -1,8 +1,7 @@
 "use client";
 
-import { memo, useCallback, useEffect, useState } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
 import { motion, AnimatePresence } from "framer-motion";
+import { useAtomValue, useSetAtom } from "jotai";
 import {
   Plus,
   MessageSquare,
@@ -21,16 +20,23 @@ import {
   EyeOff,
   Trash2,
 } from "lucide-react";
+import { memo, useCallback, useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
+import {
+  fetchSessions,
+  importAllSessions,
+  fetchImportStatuses,
+  deleteSession,
+} from "./_api/sessions";
+import { sessionKeyAtom } from "./_stores/chat";
 import {
   sessionsListAtom,
   sessionsLoadingAtom,
   loadSessionsAtom,
   startLoadingSessionsAtom,
+  sessionsRefreshTriggerAtom,
   type SessionSummary,
 } from "./_stores/session";
-import { sessionKeyAtom } from "./_stores/chat";
-import { fetchSessions, importAllSessions, fetchImportStatuses, deleteSession } from "./_api/sessions";
-import { cn } from "@/lib/utils";
 
 type SidebarProps = {
   isOpen: boolean;
@@ -40,20 +46,22 @@ type SidebarProps = {
 };
 
 /**
- * 날짜별로 세션 그룹화 (최신순)
+ * 날짜 라벨별로 세션 그룹화 (최신순)
+ * 같은 라벨(예: "Previous 7 Days")에 속하는 세션들을 하나의 그룹으로 통합
  */
 function groupSessionsByDate(sessions: SessionSummary[]): Map<string, SessionSummary[]> {
   const groups = new Map<string, SessionSummary[]>();
 
   // 날짜 내림차순 정렬
   const sorted = [...sessions].sort(
-    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
   );
 
   for (const session of sorted) {
-    const existing = groups.get(session.date) || [];
+    const label = formatDateLabel(session.date);
+    const existing = groups.get(label) || [];
     existing.push(session);
-    groups.set(session.date, existing);
+    groups.set(label, existing);
   }
 
   return groups;
@@ -117,21 +125,21 @@ const SessionItem = memo(
         className={cn(
           "w-full group flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 cursor-pointer",
           "hover:bg-white/8 active:scale-[0.98]",
-          isActive && "bg-white/10 hover:bg-white/12"
+          isActive && "bg-white/10 hover:bg-white/12",
         )}
         onClick={onSelect}
       >
         <MessageSquare
           className={cn(
             "w-4 h-4 shrink-0 transition-colors",
-            isActive ? "text-primary-400" : "text-white/40 group-hover:text-white/60"
+            isActive ? "text-primary-400" : "text-white/40 group-hover:text-white/60",
           )}
         />
         <div className="flex-1 min-w-0 text-left">
           <span
             className={cn(
               "block text-sm truncate transition-colors",
-              isActive ? "text-white font-medium" : "text-white/70 group-hover:text-white/90"
+              isActive ? "text-white font-medium" : "text-white/70 group-hover:text-white/90",
             )}
           >
             {session.title || `Session ${session.sessionId}`}
@@ -142,9 +150,7 @@ const SessionItem = memo(
                 {session.entryCount} messages
               </span>
             )}
-            {isImported && (
-              <CheckCircle className="w-3 h-3 text-emerald-400/50" />
-            )}
+            {isImported && <CheckCircle className="w-3 h-3 text-emerald-400/50" />}
           </div>
         </div>
         <button
@@ -159,7 +165,7 @@ const SessionItem = memo(
         </button>
       </div>
     );
-  }
+  },
 );
 
 SessionItem.displayName = "SessionItem";
@@ -175,8 +181,12 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
   const loadSessions = useSetAtom(loadSessionsAtom);
   const startLoading = useSetAtom(startLoadingSessionsAtom);
 
+  const refreshTrigger = useAtomValue(sessionsRefreshTriggerAtom);
+
   const [isImporting, setIsImporting] = useState(false);
-  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(
+    null,
+  );
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
   const [hideCron, setHideCron] = useState(true);
 
@@ -221,11 +231,11 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
     }
   }, [startLoading, loadSessions, hideCron]);
 
-  // 컴포넌트 마운트 시 및 hideCron 변경 시 세션 + import 상태 로드
+  // 컴포넌트 마운트 시, hideCron 변경 시, 대화 완료 시 세션 + import 상태 로드
   useEffect(() => {
     handleLoadSessions();
     loadImportStatuses();
-  }, [handleLoadSessions, loadImportStatuses]);
+  }, [handleLoadSessions, loadImportStatuses, refreshTrigger]);
 
   // 세션 선택 핸들러
   const handleSelectSession = useCallback(
@@ -233,7 +243,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
       const sessionKey = sessionIdToSessionKey(session.id);
       onSwitchSession(sessionKey);
     },
-    [onSwitchSession]
+    [onSwitchSession],
   );
 
   // 세션 삭제 핸들러
@@ -247,7 +257,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
         console.error("Failed to delete session:", error);
       }
     },
-    [handleLoadSessions]
+    [handleLoadSessions],
   );
 
   const groupedSessions = groupSessionsByDate(sessions);
@@ -278,7 +288,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
         className={cn(
           "h-full bg-gray-900/80 backdrop-blur-xl border-r border-white/5 flex flex-col overflow-hidden",
           "fixed md:relative z-50 md:z-auto",
-          !isOpen && "pointer-events-none md:pointer-events-auto"
+          !isOpen && "pointer-events-none md:pointer-events-auto",
         )}
       >
         <div className="flex flex-col h-full w-[280px]">
@@ -292,7 +302,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
                 "bg-gradient-to-r from-primary-500/20 to-primary-600/20",
                 "hover:from-primary-500/30 hover:to-primary-600/30",
                 "border border-primary-500/20 hover:border-primary-500/30",
-                "transition-all duration-200 group"
+                "transition-all duration-200 group",
               )}
             >
               <div className="p-1.5 rounded-lg bg-primary-500/20 group-hover:bg-primary-500/30 transition-colors">
@@ -309,7 +319,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
                 "w-full flex items-center gap-3 px-4 py-2.5 rounded-xl",
                 "bg-emerald-500/10 hover:bg-emerald-500/20",
                 "border border-emerald-500/15 hover:border-emerald-500/25",
-                "transition-all duration-200 group disabled:opacity-50"
+                "transition-all duration-200 group disabled:opacity-50",
               )}
             >
               <div className="p-1.5 rounded-lg bg-emerald-500/15 group-hover:bg-emerald-500/25 transition-colors">
@@ -355,20 +365,19 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
               </div>
             ) : (
               <div className="p-2">
-                {Array.from(groupedSessions.entries()).map(([date, dateSessions]) => (
-                  <div key={date} className="mb-4">
+                {Array.from(groupedSessions.entries()).map(([label, dateSessions]) => (
+                  <div key={label} className="mb-4">
                     {/* Date Header */}
                     <div className="px-3 py-2 sticky top-0 bg-gray-900/80 backdrop-blur-sm z-10">
                       <span className="text-[11px] font-semibold uppercase tracking-wider text-white/30">
-                        {formatDateLabel(date)}
+                        {label}
                       </span>
                     </div>
 
                     {/* Sessions for this date */}
                     <div className="space-y-0.5">
                       {dateSessions.map((session) => {
-                        const isActive =
-                          currentSessionKey === sessionIdToSessionKey(session.id);
+                        const isActive = currentSessionKey === sessionIdToSessionKey(session.id);
                         return (
                           <SessionItem
                             key={session.id}
@@ -390,11 +399,13 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
           {/* Footer */}
           <div className="p-3 border-t border-white/5 space-y-1">
             <button
-              onClick={() => setHideCron(prev => !prev)}
+              onClick={() => setHideCron((prev) => !prev)}
               className={cn(
                 "w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg",
                 "text-xs hover:bg-white/5 transition-all duration-200",
-                hideCron ? "text-white/30 hover:text-white/50" : "text-amber-400/60 hover:text-amber-400/80"
+                hideCron
+                  ? "text-white/30 hover:text-white/50"
+                  : "text-amber-400/60 hover:text-amber-400/80",
               )}
             >
               {hideCron ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -406,7 +417,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
               className={cn(
                 "w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg",
                 "text-xs text-white/40 hover:text-white/60 hover:bg-white/5",
-                "transition-all duration-200 disabled:opacity-50"
+                "transition-all duration-200 disabled:opacity-50",
               )}
             >
               {isLoading ? "Refreshing..." : "Refresh sessions"}
@@ -423,7 +434,7 @@ const Sidebar = ({ isOpen, onToggle, onSwitchSession, onNewSession }: SidebarPro
           "bg-gray-800/80 hover:bg-gray-700/80 backdrop-blur-sm",
           "border border-white/10 hover:border-white/20",
           "transition-all duration-200",
-          isOpen ? "left-[292px] md:left-[292px]" : "left-4 md:left-4"
+          isOpen ? "left-[292px] md:left-[292px]" : "left-4 md:left-4",
         )}
         title={isOpen ? "Close sidebar" : "Open sidebar"}
       >
