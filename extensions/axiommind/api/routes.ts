@@ -938,23 +938,45 @@ async function handleListSessions(
   return true;
 }
 
+type ProgressStep = {
+  toolName: string;
+  summary?: string;
+  isError?: boolean;
+  timestamp: number;
+};
+
+type SessionMessageWithProgress = {
+  id: string;
+  role: string;
+  content: Array<{ type: string; text?: string }>;
+  timestamp: number;
+  progressSteps?: ProgressStep[];
+};
+
+/**
+ * 도구 결과에서 요약 추출 (80자 이내)
+ */
+function extractToolSummary(content: unknown): string | undefined {
+  let text = "";
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content)) {
+    const textBlock = content.find((b: any) => b.type === "text" && b.text);
+    if (textBlock?.text) text = textBlock.text;
+  }
+  if (!text) return undefined;
+  const firstLine = text.split("\n")[0].trim();
+  return firstLine.length > 80 ? firstLine.substring(0, 80) + "…" : firstLine;
+}
+
 /**
  * JSONL 세션 파일에서 메시지 히스토리 읽기
+ * toolResult와 빈 assistant 메시지는 progressSteps로 수집하여
+ * 다음 의미있는 assistant 메시지에 첨부
  */
-async function readSessionMessages(filePath: string): Promise<
-  Array<{
-    id: string;
-    role: string;
-    content: Array<{ type: string; text?: string }>;
-    timestamp: number;
-  }>
-> {
-  const messages: Array<{
-    id: string;
-    role: string;
-    content: Array<{ type: string; text?: string }>;
-    timestamp: number;
-  }> = [];
+async function readSessionMessages(filePath: string): Promise<SessionMessageWithProgress[]> {
+  const messages: SessionMessageWithProgress[] = [];
+  const pendingSteps: ProgressStep[] = [];
 
   try {
     const fileStream = fs.createReadStream(filePath);
@@ -967,14 +989,50 @@ async function readSessionMessages(filePath: string): Promise<
       try {
         const entry = JSON.parse(line);
 
-        // 메시지 엔트리만 추출
         if (entry.type === "message" && entry.message) {
           const msg = entry.message;
+          const ts = msg.timestamp || new Date(entry.timestamp).getTime();
+
+          // toolResult → progressStep으로 수집
+          if (msg.role === "toolResult") {
+            pendingSteps.push({
+              toolName: msg.toolName || "unknown",
+              summary: extractToolSummary(msg.content),
+              isError: msg.isError || false,
+              timestamp: ts,
+            });
+            continue;
+          }
+
+          // assistant 메시지 처리
+          if (msg.role === "assistant") {
+            const hasText = Array.isArray(msg.content)
+              ? msg.content.some((b: any) => b.type === "text" && b.text?.trim())
+              : typeof msg.content === "string" && msg.content.trim();
+
+            if (!hasText) {
+              // 빈 assistant (toolCall만 있음) → 건너뛰되 steps는 유지
+              continue;
+            }
+
+            // 텍스트가 있는 assistant → pendingSteps 첨부
+            messages.push({
+              id: entry.id,
+              role: msg.role,
+              content: msg.content,
+              timestamp: ts,
+              ...(pendingSteps.length > 0 && { progressSteps: [...pendingSteps] }),
+            });
+            pendingSteps.length = 0;
+            continue;
+          }
+
+          // user 메시지 등
           messages.push({
             id: entry.id,
             role: msg.role,
             content: msg.content,
-            timestamp: msg.timestamp || new Date(entry.timestamp).getTime(),
+            timestamp: ts,
           });
         }
       } catch {

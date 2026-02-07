@@ -41,11 +41,19 @@ export async function fetchSessions(
   return response.json();
 }
 
+export type ProgressStep = {
+  toolName: string;
+  summary?: string;
+  isError?: boolean;
+  timestamp: number;
+};
+
 export type SessionMessage = {
   id: string;
   role: string;
   content: Array<{ type: string; text?: string }>;
   timestamp: number;
+  progressSteps?: ProgressStep[];
 };
 
 export type SessionDetailResponse = {

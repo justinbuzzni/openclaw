@@ -1,5 +1,12 @@
 import { atom } from "jotai";
 
+export type ProgressStep = {
+  toolName: string;
+  summary?: string;
+  isError?: boolean;
+  timestamp: number;
+};
+
 export type Message = {
   id: string;
   role: "user" | "assistant";
@@ -8,6 +15,7 @@ export type Message = {
   isStreaming?: boolean;
   thinkingContent?: string;
   isThinkingStreaming?: boolean;
+  progressSteps?: ProgressStep[];
 };
 
 export type ContentBlock = {
@@ -36,26 +44,26 @@ export type ToolProgress = {
 // 메모리 작업 타입
 export type MemoryOperationType = "save" | "recall" | "search";
 export type MemoryOperationPhase =
-  | "extracting"      // 세션에서 정보 추출 중
-  | "generating"      // Idris 코드 생성 중
-  | "validating"      // 타입 검증 중
-  | "indexing"        // 검색 인덱스 저장 중
-  | "searching"       // 메모리 검색 중
-  | "retrieving"      // 결과 조회 중
-  | "complete"        // 완료
-  | "error";          // 오류
+  | "extracting" // 세션에서 정보 추출 중
+  | "generating" // Idris 코드 생성 중
+  | "validating" // 타입 검증 중
+  | "indexing" // 검색 인덱스 저장 중
+  | "searching" // 메모리 검색 중
+  | "retrieving" // 결과 조회 중
+  | "complete" // 완료
+  | "error"; // 오류
 
 export type MemoryOperation = {
   id: string;
   type: MemoryOperationType;
   phase: MemoryOperationPhase;
-  query?: string;           // 검색/조회 쿼리
-  sessionId?: string;       // 저장된 세션 ID
-  entriesCount?: number;    // 저장/조회된 엔트리 수
-  results?: unknown[];      // 검색 결과
-  error?: string;           // 에러 메시지
-  startedAt: number;        // 시작 시간
-  completedAt?: number;     // 완료 시간
+  query?: string; // 검색/조회 쿼리
+  sessionId?: string; // 저장된 세션 ID
+  entriesCount?: number; // 저장/조회된 엔트리 수
+  results?: unknown[]; // 검색 결과
+  error?: string; // 에러 메시지
+  startedAt: number; // 시작 시간
+  completedAt?: number; // 완료 시간
 };
 
 // 파일 첨부
@@ -64,8 +72,8 @@ export type Attachment = {
   name: string;
   type: string;
   size: number;
-  data: string;       // base64 encoded
-  preview?: string;   // object URL for images
+  data: string; // base64 encoded
+  preview?: string; // object URL for images
 };
 
 // 메시지 목록
@@ -113,19 +121,23 @@ export const addMessageAtom = atom(
     };
     set(messagesAtom, [...messages, newMessage]);
     return newMessage.id;
-  }
+  },
 );
 
 // 메시지 업데이트 액션 (스트리밍용)
 export const updateMessageAtom = atom(
   null,
-  (get, set, params: {
-    id: string;
-    content?: string | ContentBlock[];
-    isStreaming?: boolean;
-    thinkingContent?: string;
-    isThinkingStreaming?: boolean;
-  }) => {
+  (
+    get,
+    set,
+    params: {
+      id: string;
+      content?: string | ContentBlock[];
+      isStreaming?: boolean;
+      thinkingContent?: string;
+      isThinkingStreaming?: boolean;
+    },
+  ) => {
     const messages = get(messagesAtom);
     const idx = messages.findIndex((m) => m.id === params.id);
     if (idx === -1) return;
@@ -136,10 +148,12 @@ export const updateMessageAtom = atom(
       ...(params.content !== undefined && { content: params.content }),
       ...(params.isStreaming !== undefined && { isStreaming: params.isStreaming }),
       ...(params.thinkingContent !== undefined && { thinkingContent: params.thinkingContent }),
-      ...(params.isThinkingStreaming !== undefined && { isThinkingStreaming: params.isThinkingStreaming }),
+      ...(params.isThinkingStreaming !== undefined && {
+        isThinkingStreaming: params.isThinkingStreaming,
+      }),
     };
     set(messagesAtom, updated);
-  }
+  },
 );
 
 // 메시지 전송 액션 (UI 상태만 업데이트, 실제 전송은 useGateway에서)
@@ -163,22 +177,19 @@ export const sendMessageAtom = atom(null, (get, set, content: string) => {
 // 히스토리 로드 액션
 export const loadHistoryAtom = atom(
   null,
-  (
-    _get,
-    set,
-    params: { messages: unknown[]; thinkingLevel?: string | null }
-  ) => {
+  (_get, set, params: { messages: unknown[]; thinkingLevel?: string | null }) => {
     const normalized: Message[] = params.messages.map((msg: any, idx: number) => ({
       id: msg.id ?? `hist-${idx}`,
       role: msg.role ?? "assistant",
       content: extractTextFromContent(msg.content),
       timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+      ...(msg.progressSteps?.length && { progressSteps: msg.progressSteps }),
     }));
     set(messagesAtom, normalized);
     if (params.thinkingLevel !== undefined) {
       set(thinkingLevelAtom, params.thinkingLevel);
     }
-  }
+  },
 );
 
 // 스트리밍 시작
@@ -198,17 +209,20 @@ export const startStreamingAtom = atom(null, (get, set, runId: string) => {
 });
 
 // 스트리밍 델타 업데이트
-export const updateStreamingDeltaAtom = atom(null, (get, set, params: { runId: string; text: string }) => {
-  const currentRunId = get(chatRunIdAtom);
-  if (currentRunId !== params.runId) return;
+export const updateStreamingDeltaAtom = atom(
+  null,
+  (get, set, params: { runId: string; text: string }) => {
+    const currentRunId = get(chatRunIdAtom);
+    if (currentRunId !== params.runId) return;
 
-  set(streamingTextAtom, params.text);
-  set(updateMessageAtom, {
-    id: params.runId,
-    content: params.text,
-    isStreaming: true,
-  });
-});
+    set(streamingTextAtom, params.text);
+    set(updateMessageAtom, {
+      id: params.runId,
+      content: params.text,
+      isStreaming: true,
+    });
+  },
+);
 
 // 스트리밍 완료
 export const finishStreamingAtom = atom(
@@ -232,26 +246,29 @@ export const finishStreamingAtom = atom(
     set(streamingStartedAtAtom, null);
     set(toolProgressListAtom, []);
     set(memoryOperationsAtom, []);
-  }
+  },
 );
 
 // 스트리밍 에러
-export const streamingErrorAtom = atom(null, (get, set, params: { runId: string; error?: string }) => {
-  const currentRunId = get(chatRunIdAtom);
-  if (currentRunId !== params.runId) return;
+export const streamingErrorAtom = atom(
+  null,
+  (get, set, params: { runId: string; error?: string }) => {
+    const currentRunId = get(chatRunIdAtom);
+    if (currentRunId !== params.runId) return;
 
-  set(updateMessageAtom, {
-    id: params.runId,
-    content: `Error: ${params.error ?? "Unknown error"}`,
-    isStreaming: false,
-  });
+    set(updateMessageAtom, {
+      id: params.runId,
+      content: `Error: ${params.error ?? "Unknown error"}`,
+      isStreaming: false,
+    });
 
-  set(chatRunIdAtom, null);
-  set(streamingTextAtom, "");
-  set(streamingStartedAtAtom, null);
-  set(toolProgressListAtom, []);
-  set(memoryOperationsAtom, []);
-});
+    set(chatRunIdAtom, null);
+    set(streamingTextAtom, "");
+    set(streamingStartedAtAtom, null);
+    set(toolProgressListAtom, []);
+    set(memoryOperationsAtom, []);
+  },
+);
 
 // 도구 진행 상태 업데이트
 export const updateToolProgressAtom = atom(null, (get, set, progress: ToolProgress) => {
@@ -278,13 +295,24 @@ export const startMemoryOperationAtom = atom(
       startedAt: Date.now(),
     };
     set(memoryOperationsAtom, [...get(memoryOperationsAtom), operation]);
-  }
+  },
 );
 
 // 메모리 작업 단계 업데이트
 export const updateMemoryOperationAtom = atom(
   null,
-  (get, set, params: { id: string; phase?: MemoryOperationPhase; sessionId?: string; entriesCount?: number; results?: unknown[]; error?: string }) => {
+  (
+    get,
+    set,
+    params: {
+      id: string;
+      phase?: MemoryOperationPhase;
+      sessionId?: string;
+      entriesCount?: number;
+      results?: unknown[];
+      error?: string;
+    },
+  ) => {
     const list = get(memoryOperationsAtom);
     const idx = list.findIndex((op) => op.id === params.id);
     if (idx === -1) return;
@@ -297,10 +325,12 @@ export const updateMemoryOperationAtom = atom(
       ...(params.entriesCount !== undefined && { entriesCount: params.entriesCount }),
       ...(params.results && { results: params.results }),
       ...(params.error && { error: params.error }),
-      ...(params.phase === "complete" || params.phase === "error" ? { completedAt: Date.now() } : {}),
+      ...(params.phase === "complete" || params.phase === "error"
+        ? { completedAt: Date.now() }
+        : {}),
     };
     set(memoryOperationsAtom, updated);
-  }
+  },
 );
 
 // 스트리밍 완료시 메모리 작업 초기화

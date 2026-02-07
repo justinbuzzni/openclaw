@@ -1,10 +1,21 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useAtomValue } from "jotai";
+import {
+  Bot,
+  User,
+  ChevronRight,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Code2,
+  Terminal,
+} from "lucide-react";
+import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { motion, AnimatePresence } from "framer-motion";
+import { cn } from "@/lib/utils";
 import {
   messagesAtom,
   toolProgressListAtom,
@@ -12,11 +23,10 @@ import {
   memoryOperationsAtom,
   type Message,
   type ToolProgress,
+  type ProgressStep,
 } from "./_stores/chat";
 import MemoryOperationIndicator from "./MemoryOperationIndicator";
 import ThinkingBlock from "./ThinkingBlock";
-import { cn } from "@/lib/utils";
-import { Bot, User, ChevronRight, CheckCircle2, XCircle, Loader2, Code2, Terminal } from "lucide-react";
 
 // Tool Progress Indicator (Collapsible)
 const ToolProgressIndicator = memo(function ToolProgressIndicator({
@@ -40,25 +50,34 @@ const ToolProgressIndicator = memo(function ToolProgressIndicator({
         className={cn(
           "flex items-center gap-2 text-xs px-3 py-1.5 rounded-lg",
           "bg-white/5 hover:bg-white/10 border border-white/5",
-          "transition-all duration-200 cursor-pointer w-full text-left group"
+          "transition-all duration-200 cursor-pointer w-full text-left group",
         )}
       >
-        <ChevronRight className={cn("w-3.5 h-3.5 transition-transform text-gray-500", isExpanded ? "rotate-90" : "")} />
-        
+        <ChevronRight
+          className={cn(
+            "w-3.5 h-3.5 transition-transform text-gray-500",
+            isExpanded ? "rotate-90" : "",
+          )}
+        />
+
         {isStreaming && runningCount > 0 ? (
           <span className="flex items-center gap-2 text-blue-400">
             <Loader2 className="w-3 h-3 animate-spin" />
             <span className="font-medium">{runningCount} tools executing...</span>
-            {doneCount > 0 && <span className="text-gray-500 font-normal">({doneCount} completed)</span>}
+            {doneCount > 0 && (
+              <span className="text-gray-500 font-normal">({doneCount} completed)</span>
+            )}
           </span>
         ) : (
-          <span className="text-gray-400 group-hover:text-gray-300">{tools.length} ecosystem tools used</span>
+          <span className="text-gray-400 group-hover:text-gray-300">
+            {tools.length} ecosystem tools used
+          </span>
         )}
       </button>
 
       <AnimatePresence>
         {isExpanded && (
-          <motion.div 
+          <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
@@ -71,8 +90,9 @@ const ToolProgressIndicator = memo(function ToolProgressIndicator({
                   className={cn(
                     "text-xs px-3 py-1.5 rounded-md flex items-center justify-between gap-2 border",
                     tool.status === "running" && "bg-blue-500/10 border-blue-500/20 text-blue-200",
-                    tool.status === "done" && "bg-emerald-500/5 border-emerald-500/10 text-emerald-300",
-                    tool.status === "error" && "bg-rose-500/10 border-rose-500/20 text-rose-300"
+                    tool.status === "done" &&
+                      "bg-emerald-500/5 border-emerald-500/10 text-emerald-300",
+                    tool.status === "error" && "bg-rose-500/10 border-rose-500/20 text-rose-300",
                   )}
                 >
                   <div className="flex items-center gap-2">
@@ -95,9 +115,18 @@ const ToolProgressIndicator = memo(function ToolProgressIndicator({
 const StreamingIndicator = memo(function StreamingIndicator() {
   return (
     <span className="inline-flex gap-1 ml-1 translate-y-[2px]">
-      <span className="w-1.5 h-1.5 bg-current opacity-40 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
-      <span className="w-1.5 h-1.5 bg-current opacity-40 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
-      <span className="w-1.5 h-1.5 bg-current opacity-40 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+      <span
+        className="w-1.5 h-1.5 bg-current opacity-40 rounded-full animate-bounce"
+        style={{ animationDelay: "0ms" }}
+      />
+      <span
+        className="w-1.5 h-1.5 bg-current opacity-40 rounded-full animate-bounce"
+        style={{ animationDelay: "150ms" }}
+      />
+      <span
+        className="w-1.5 h-1.5 bg-current opacity-40 rounded-full animate-bounce"
+        style={{ animationDelay: "300ms" }}
+      />
     </span>
   );
 });
@@ -162,15 +191,15 @@ const CollapsibleToolResult = memo(function CollapsibleToolResult({
         className={cn(
           "flex items-center gap-2 text-xs px-3 py-2 rounded-lg w-full text-left",
           "bg-black/20 hover:bg-black/30 border border-white/5",
-          "text-gray-300 font-mono transition-colors"
+          "text-gray-300 font-mono transition-colors",
         )}
       >
         <Terminal className="w-3.5 h-3.5 text-gray-500" />
         <span className="flex-1 truncate">{summary}</span>
-        {parsed.tookMs && (
-          <span className="text-[10px] text-gray-600">({parsed.tookMs}ms)</span>
-        )}
-        <ChevronRight className={cn("w-3.5 h-3.5 transition-transform", isExpanded ? "rotate-90" : "")} />
+        {parsed.tookMs && <span className="text-[10px] text-gray-600">({parsed.tookMs}ms)</span>}
+        <ChevronRight
+          className={cn("w-3.5 h-3.5 transition-transform", isExpanded ? "rotate-90" : "")}
+        />
       </button>
 
       {isExpanded && (
@@ -178,6 +207,86 @@ const CollapsibleToolResult = memo(function CollapsibleToolResult({
           {JSON.stringify(parsed, null, 2)}
         </pre>
       )}
+    </div>
+  );
+});
+
+// Progress Steps (세션 히스토리의 도구 실행 과정)
+const ProgressStepsCollapsible = memo(function ProgressStepsCollapsible({
+  steps,
+}: {
+  steps: ProgressStep[];
+}) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  if (steps.length === 0) return null;
+
+  const errorCount = steps.filter((s) => s.isError).length;
+  const successCount = steps.length - errorCount;
+
+  return (
+    <div className="mb-3">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className={cn(
+          "flex items-center gap-2 text-xs px-3 py-2 rounded-lg w-full text-left",
+          "bg-white/5 hover:bg-white/8 border border-white/5",
+          "transition-all duration-200 cursor-pointer group",
+        )}
+      >
+        <ChevronRight
+          className={cn(
+            "w-3.5 h-3.5 transition-transform text-gray-500",
+            isExpanded && "rotate-90",
+          )}
+        />
+        <Terminal className="w-3.5 h-3.5 text-gray-500" />
+        <span className="text-gray-400 group-hover:text-gray-300 flex-1">
+          {steps.length} step{steps.length !== 1 ? "s" : ""}
+        </span>
+        {successCount > 0 && (
+          <span className="flex items-center gap-0.5 text-emerald-400/70">
+            <CheckCircle2 className="w-3 h-3" />
+            <span>{successCount}</span>
+          </span>
+        )}
+        {errorCount > 0 && (
+          <span className="flex items-center gap-0.5 text-rose-400/70">
+            <XCircle className="w-3 h-3" />
+            <span>{errorCount}</span>
+          </span>
+        )}
+      </button>
+
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="flex flex-col gap-1 mt-1.5 ml-3 pl-3 border-l border-white/10">
+              {steps.map((step, idx) => (
+                <div key={`step-${idx}`} className="flex items-start gap-2 text-xs py-1">
+                  {step.isError ? (
+                    <XCircle className="w-3 h-3 text-rose-400/60 mt-0.5 shrink-0" />
+                  ) : (
+                    <CheckCircle2 className="w-3 h-3 text-emerald-400/50 mt-0.5 shrink-0" />
+                  )}
+                  <span className="font-mono text-gray-400 shrink-0 w-20 truncate">
+                    {step.toolName}
+                  </span>
+                  {step.summary && (
+                    <span className="text-gray-500 truncate flex-1">{step.summary}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 });
@@ -207,8 +316,8 @@ const MarkdownContent = memo(function MarkdownContent({ content }: { content: st
               <div className="relative my-3 rounded-lg overflow-hidden border border-white/10 bg-[#1e1e1e] shadow-lg">
                 <div className="flex items-center justify-between px-3 py-1.5 bg-white/5 border-b border-white/5">
                   <div className="flex items-center gap-1.5">
-                      <Code2 className="w-3.5 h-3.5 text-gray-500" />
-                      <span className="text-xs text-gray-400 font-mono">{match?.[1] || 'code'}</span>
+                    <Code2 className="w-3.5 h-3.5 text-gray-500" />
+                    <span className="text-xs text-gray-400 font-mono">{match?.[1] || "code"}</span>
                   </div>
                 </div>
                 <pre className="p-4 overflow-x-auto">
@@ -219,22 +328,35 @@ const MarkdownContent = memo(function MarkdownContent({ content }: { content: st
               </div>
             );
           },
-        a: ({ href, children }) => (
-          <a href={href} target="_blank" rel="noopener noreferrer" className="text-primary-400 hover:text-primary-300 underline underline-offset-4 decoration-primary-400/50 hover:decoration-primary-300">
-            {children}
-          </a>
-        ),
-        ul: ({ children }) => <ul className="list-disc list-outside ml-4 space-y-1 marker:text-gray-500">{children}</ul>,
-        ol: ({ children }) => <ol className="list-decimal list-outside ml-4 space-y-1 marker:text-gray-500">{children}</ol>,
-        blockquote: ({ children }) => (
+          a: ({ href, children }) => (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-primary-400 hover:text-primary-300 underline underline-offset-4 decoration-primary-400/50 hover:decoration-primary-300"
+            >
+              {children}
+            </a>
+          ),
+          ul: ({ children }) => (
+            <ul className="list-disc list-outside ml-4 space-y-1 marker:text-gray-500">
+              {children}
+            </ul>
+          ),
+          ol: ({ children }) => (
+            <ol className="list-decimal list-outside ml-4 space-y-1 marker:text-gray-500">
+              {children}
+            </ol>
+          ),
+          blockquote: ({ children }) => (
             <blockquote className="border-l-2 border-primary-500/50 pl-4 my-2 italic text-gray-400 bg-primary-500/5 py-2 pr-2 rounded-r-lg">
               {children}
             </blockquote>
-        ),
-      }}
-    >
-      {content}
-    </ReactMarkdown>
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 });
@@ -256,23 +378,20 @@ const MessageItem = memo(function MessageItem({ message, showToolProgress }: Mes
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
-      className={cn(
-        "flex w-full mb-8 gap-4",
-        isUser ? "justify-end" : "justify-start"
-      )}
+      className={cn("flex w-full mb-8 gap-4", isUser ? "justify-end" : "justify-start")}
     >
-        {!isUser && (
-            <div className="w-8 h-8 rounded-full bg-surface border border-white/10 flex items-center justify-center shrink-0 mt-1 shadow-lg">
-                <Bot className="w-5 h-5 text-primary-400" />
-            </div>
-        )}
+      {!isUser && (
+        <div className="w-8 h-8 rounded-full bg-surface border border-white/10 flex items-center justify-center shrink-0 mt-1 shadow-lg">
+          <Bot className="w-5 h-5 text-primary-400" />
+        </div>
+      )}
 
       <div
         className={cn(
           "max-w-[85%] lg:max-w-[75%] rounded-2xl px-6 py-4 shadow-md",
           isUser
             ? "bg-gradient-to-br from-primary-600 to-primary-700 text-white rounded-tr-sm"
-            : "bg-surface/80 dark:bg-[#1a1b22] border border-white/5 text-gray-100 rounded-tl-sm backdrop-blur-md"
+            : "bg-surface/80 dark:bg-[#1a1b22] border border-white/5 text-gray-100 rounded-tl-sm backdrop-blur-md",
         )}
       >
         {/* Thinking Block (Extended Thinking / Chain-of-Thought) */}
@@ -284,6 +403,14 @@ const MessageItem = memo(function MessageItem({ message, showToolProgress }: Mes
             />
           </div>
         )}
+
+        {/* Progress Steps (세션 히스토리의 도구 실행 과정) */}
+        {!isUser &&
+          !message.isStreaming &&
+          message.progressSteps &&
+          message.progressSteps.length > 0 && (
+            <ProgressStepsCollapsible steps={message.progressSteps} />
+          )}
 
         <div className="break-words leading-relaxed">
           {text ? (
@@ -310,16 +437,22 @@ const MessageItem = memo(function MessageItem({ message, showToolProgress }: Mes
           <ToolProgressIndicator tools={tools} isStreaming={message.isStreaming} />
         )}
 
-        <div className={cn("text-[10px] mt-2 opacity-40 uppercase tracking-widest font-medium", isUser ? "text-blue-100" : "text-gray-500")}>
-           AxiomMind &bull; {message.timestamp.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
+        <div
+          className={cn(
+            "text-[10px] mt-2 opacity-40 uppercase tracking-widest font-medium",
+            isUser ? "text-blue-100" : "text-gray-500",
+          )}
+        >
+          AxiomMind &bull;{" "}
+          {message.timestamp.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}
         </div>
       </div>
 
-       {isUser && (
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center shrink-0 mt-1 shadow-lg border border-white/10">
-                <User className="w-5 h-5 text-gray-300" />
-            </div>
-        )}
+      {isUser && (
+        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-gray-700 to-gray-800 flex items-center justify-center shrink-0 mt-1 shadow-lg border border-white/10">
+          <User className="w-5 h-5 text-gray-300" />
+        </div>
+      )}
     </motion.div>
   );
 });
@@ -331,10 +464,10 @@ const MessageList = () => {
 
   useEffect(() => {
     if (containerRef.current) {
-        // Smooth scroll
+      // Smooth scroll
       containerRef.current.scrollTo({
-          top: containerRef.current.scrollHeight,
-          behavior: "smooth"
+        top: containerRef.current.scrollHeight,
+        behavior: "smooth",
       });
     }
   }, [messages]);
@@ -343,31 +476,35 @@ const MessageList = () => {
     return (
       <div className="flex-1 flex items-center justify-center h-full">
         <div className="text-center space-y-4 max-w-md px-6">
-            <div className="w-20 h-20 bg-primary-500/10 rounded-3xl flex items-center justify-center mx-auto mb-6 backdrop-blur-xl border border-primary-500/20 shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]">
-                 <Bot className="w-10 h-10 text-primary-400" />
-            </div>
-            <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60">
-                Welcome to AxiomMind
-            </h2>
-            <p className="text-gray-400 leading-relaxed">
-                Your advanced memory graduation pipeline is ready. Start a conversation to explore your knowledge base.
-            </p>
+          <div className="w-20 h-20 bg-primary-500/10 rounded-3xl flex items-center justify-center mx-auto mb-6 backdrop-blur-xl border border-primary-500/20 shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]">
+            <Bot className="w-10 h-10 text-primary-400" />
+          </div>
+          <h2 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60">
+            Welcome to AxiomMind
+          </h2>
+          <p className="text-gray-400 leading-relaxed">
+            Your advanced memory graduation pipeline is ready. Start a conversation to explore your
+            knowledge base.
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div ref={containerRef} className="absolute inset-0 overflow-y-auto p-4 md:p-6 scrollbar-thin scrollbar-thumb-gray-700/50 scrollbar-track-transparent">
-        <div className="max-w-4xl mx-auto pb-4">
-            {messages.map((message) => (
-                <MessageItem
-                key={message.id}
-                message={message}
-                showToolProgress={message.id === chatRunId}
-                />
-            ))}
-        </div>
+    <div
+      ref={containerRef}
+      className="absolute inset-0 overflow-y-auto p-4 md:p-6 scrollbar-thin scrollbar-thumb-gray-700/50 scrollbar-track-transparent"
+    >
+      <div className="max-w-4xl mx-auto pb-4">
+        {messages.map((message) => (
+          <MessageItem
+            key={message.id}
+            message={message}
+            showToolProgress={message.id === chatRunId}
+          />
+        ))}
+      </div>
     </div>
   );
 };
