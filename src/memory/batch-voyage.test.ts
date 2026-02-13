@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReadableStream } from "node:stream/web";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { VoyageBatchOutputLine, VoyageBatchRequest } from "./batch-voyage.js";
 import type { VoyageEmbeddingClient } from "./embeddings-voyage.js";
 

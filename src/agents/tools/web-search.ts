@@ -2,6 +2,7 @@ import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { AnyAgentTool } from "./common.js";
 import { formatCliCommand } from "../../cli/command-format.js";
+import { retryAsync, type RetryConfig } from "../../infra/retry.js";
 import { wrapWebContent } from "../../security/external-content.js";
 import { jsonResult, readNumberParam, readStringParam } from "./common.js";
 import {
@@ -22,6 +23,16 @@ const DEFAULT_SEARCH_COUNT = 5;
 const MAX_SEARCH_COUNT = 10;
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
+
+const BRAVE_RATE_LIMIT_MIN_DELAY_MS = 1100;
+const BRAVE_RETRY_DEFAULTS: Required<RetryConfig> = {
+  attempts: 3,
+  minDelayMs: 1100,
+  maxDelayMs: 10_000,
+  jitter: 0.1,
+};
+
+let lastBraveRequestTime = 0;
 const DEFAULT_PERPLEXITY_BASE_URL = "https://openrouter.ai/api/v1";
 const PERPLEXITY_DIRECT_BASE_URL = "https://api.perplexity.ai";
 const DEFAULT_PERPLEXITY_MODEL = "perplexity/sonar-pro";
@@ -83,6 +94,20 @@ type BraveSearchResponse = {
     results?: BraveSearchResult[];
   };
 };
+
+type BraveSearchError = Error & {
+  status?: number;
+  retryAfterMs?: number;
+};
+
+function parseRetryAfterHeader(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number.parseInt(value, 10);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return seconds * 1000;
+  }
+  return undefined;
+}
 
 type PerplexityConfig = {
   apiKey?: string;
@@ -417,21 +442,42 @@ async function runWebSearch(params: {
     url.searchParams.set("freshness", params.freshness);
   }
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "X-Subscription-Token": params.apiKey,
-    },
-    signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+  const fetchBraveSearch = async (): Promise<BraveSearchResponse> => {
+    const now = Date.now();
+    const elapsed = now - lastBraveRequestTime;
+    if (elapsed < BRAVE_RATE_LIMIT_MIN_DELAY_MS) {
+      await new Promise((r) => setTimeout(r, BRAVE_RATE_LIMIT_MIN_DELAY_MS - elapsed));
+    }
+    lastBraveRequestTime = Date.now();
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "X-Subscription-Token": params.apiKey,
+      },
+      signal: withTimeout(undefined, params.timeoutSeconds * 1000),
+    });
+
+    if (!res.ok) {
+      const detail = await readResponseText(res);
+      const err = new Error(`Brave Search API error (${res.status}): ${detail || res.statusText}`);
+      (err as BraveSearchError).status = res.status;
+      (err as BraveSearchError).retryAfterMs = parseRetryAfterHeader(
+        res.headers.get("Retry-After"),
+      );
+      throw err;
+    }
+
+    return (await res.json()) as BraveSearchResponse;
+  };
+
+  const data = await retryAsync(fetchBraveSearch, {
+    ...BRAVE_RETRY_DEFAULTS,
+    label: "brave-search",
+    shouldRetry: (err) => (err as BraveSearchError).status === 429,
+    retryAfterMs: (err) => (err as BraveSearchError).retryAfterMs,
   });
-
-  if (!res.ok) {
-    const detail = await readResponseText(res);
-    throw new Error(`Brave Search API error (${res.status}): ${detail || res.statusText}`);
-  }
-
-  const data = (await res.json()) as BraveSearchResponse;
   const results = Array.isArray(data.web?.results) ? (data.web?.results ?? []) : [];
   const mapped = results.map((entry) => {
     const description = entry.description ?? "";

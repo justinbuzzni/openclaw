@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #0f172a;
+    --surface: #f8fafc;
+    --surface-foreground: #1e293b;
+    --border: #e2e8f0;
+  }
+
+  /* Dark mode via class (matches tailwind.config.ts darkMode: "class") */
+  .dark {
+    --background: #030712; /* Deep space black */
+    --foreground: #f8fafc;
+    --surface: #111827; /* Gray 900 */
+    --surface-foreground: #e2e8f0;
+    --border: #1f2937;
+  }
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+  font-feature-settings: "rlig" 1, "calt" 1;
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-white/70 dark:bg-black/40 backdrop-blur-xl border border-white/20 dark:border-white/10 shadow-sm;
+  }
+  
+  .glass-panel {
+    @apply bg-white/80 dark:bg-gray-900/60 backdrop-blur-xl border-r border-gray-200/50 dark:border-gray-800/50;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-gray-300 dark:bg-gray-700 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-gray-400 dark:bg-gray-600;
+}

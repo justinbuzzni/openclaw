@@ -372,3 +372,11 @@ export type { ProcessedLineMessage } from "../line/markdown-to-line.js";
 
 // Media utilities
 export { loadWebMedia, type WebMediaResult } from "../web/media.js";
+
+// Embeddings
+export { createEmbeddingProvider } from "../memory/embeddings.js";
+export type {
+  EmbeddingProvider,
+  EmbeddingProviderResult,
+  EmbeddingProviderOptions,
+} from "../memory/embeddings.js";

@@ -1,0 +1,6 @@
+package memory
+
+sourcedir = "src"
+
+modules = LongTermMemory.MemorySchema
+        , LongTermMemory.GraduationSchema

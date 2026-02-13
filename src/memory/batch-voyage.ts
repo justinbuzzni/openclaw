@@ -1,8 +1,7 @@
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
-
-import { retryAsync } from "../infra/retry.js";
 import type { VoyageEmbeddingClient } from "./embeddings-voyage.js";
+import { retryAsync } from "../infra/retry.js";
 import { hashText, runWithConcurrency } from "./internal.js";
 
 /**

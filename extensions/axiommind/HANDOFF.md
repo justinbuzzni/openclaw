@@ -1,0 +1,680 @@
+# AxiomMind Plugin - Handoff Document
+
+## 프로젝트 개요
+
+OpenClaw용 커스텀 채팅 UI + Memory Graduation Pipeline 플러그인
+
+- **플러그인 위치**: `extensions/axiommind/`
+- **웹 UI 위치**: `extensions/axiommind/web/`
+- **문서**: `specs/axiommind/` (spec.md, plan.md, context.md)
+- **README**: `extensions/axiommind/README.md`
+
+## 현재 상태 (2026-02-01 v2.4 - Memory Dashboard + 세션 최적화 ✅)
+
+### 최근 커밋
+```
+(pending) feat(axiommind): add memory dashboard UI with stats and analytics
+(pending) feat(axiommind): optimize session tool instructions (first message only)
+(pending) feat(axiommind): configure OpenClaw core memory_search to use local EmbeddingGemma
+c1b622bc3 feat(axiommind): add memory editor UI and CRUD API
+ca15b4a87 docs(axiommind): update HANDOFF.md with v2.1.1 status
+c4856c8ce feat(axiommind): add auto-scheduler, embeddings, and DuckDB fixes
+```
+
+**v2.4 변경 사항 (2026-02-01):**
+- **Memory Dashboard UI**: `/ax/dashboard` 페이지 추가
+  - 통계 카드 (총 메모리, L3/L4/Pending)
+  - Stage Distribution 바 차트
+  - Top Accessed 메모리 목록
+  - Recent Activity 타임라인
+  - Embedding Provider 정보
+  - Scheduler 상태
+- **세션별 도구 안내 최적화**: 첫 메시지에만 `## Memory Tools Available` 표시
+
+**v2.4 변경 파일:**
+- 신규: `web/app/dashboard/page.tsx` - 대시보드 라우트
+- 신규: `web/features/dashboard/Dashboard.tsx` - 대시보드 메인 컴포넌트
+- 신규: `web/features/dashboard/useDashboard.ts` - 데이터 fetching 훅
+- 신규: `web/features/dashboard/index.ts` - export 파일
+- 수정: `api/routes.ts` - Dashboard API 엔드포인트 추가
+- 수정: `memory-pipeline/indexer.ts` - `getEntriesByType()`, `getTopAccessedEntries()` 추가
+- 수정: `memory-pipeline/message-handler.ts` - `LightContextOptions` 타입 추가
+- 수정: `index.ts` - `sessionToolsShown` 세션 추적 추가
+- 수정: `web/features/memory/MemoryPanel.tsx` - 대시보드 링크 버튼 추가
+
+**v2.3.1 변경 사항 (2026-02-01):**
+- **OpenClaw 코어 설정**: `agents.defaults.memorySearch.provider = "local"` 설정
+- 이제 `memory_search` 도구가 EmbeddingGemma 308M 로컬 모델 사용
+- API 키 없이 다국어(한국어 포함) 벡터 검색 가능
+
+**v2.3 변경 파일:**
+- 수정: `embeddings.ts`, `orchestrator.ts`, `routes.ts`
+- 수정: `src/plugin-sdk/index.ts` (embedding export 추가)
+- 설정: `~/.openclaw/openclaw.json` (`agents.defaults.memorySearch.provider`)
+
+**v2.2 변경 파일 (10개):**
+- 신규: `MemoryEditor.tsx`
+- 수정: `routes.ts`, `indexer.ts`, `orchestrator.ts`, `search.ts`, `types.ts`, `SearchResults.tsx`, `queries.ts`, `useMemory.ts`, `memory.ts`
+
+### 테스트 완료 항목 ✅
+- [x] 게이트웨이 안정 실행 (크래시 없음)
+- [x] `/ax/api/entries` - 엔트리 목록 조회
+- [x] `/ax/api/entries/:id` - 개별 엔트리 조회
+- [x] `/ax/api/scheduler/stats` - 스케줄러 통계 조회
+- [x] `/ax/api/graduation/stats` - 메모리 승격 통계
+- [x] DuckDB SQL 호환성 (datetime, CURRENT_TIMESTAMP, BigInt)
+- [x] **로컬 임베딩 벡터 검색 (v2.3.1)**
+  - `memory_search` 도구: `provider: "local"`, `model: "embeddinggemma-300M-Q8_0.gguf"`
+  - 한국어 검색 테스트: "관심사", "생일" 쿼리 → 결과 반환 (score 0.39~0.42)
+  - API 키 에러 없음 확인
+
+### v2.0 주요 변경 - Intent-based Memory Retrieval
+
+**문제점 (v1):**
+- 매 메시지마다 무거운 memory instruction 주입 (~1K tokens)
+- "항상 axiom_search 먼저 호출하라"는 지시로 불필요한 tool call 발생
+- 세션 컨텍스트에 이미 있는 정보를 중복 검색
+
+**해결책 (v2):**
+- Intent 기반 메모리 검색 (필요할 때만)
+- 세션 시작 시 메타데이터만 프리로드
+- 시맨틱 캐시로 중복 검색 방지
+- 세션 종료 시 자동 메모리 추출
+
+```
+v1: 매 메시지 → 무거운 instruction (~1K tokens) → 항상 tool call
+v2: 매 메시지 → Intent 분류 → 필요시에만 검색 (~0.3K tokens)
+```
+
+### Memory Graduation Pipeline 구현 상태
+
+| 레벨 | 이름 | 구현 상태 | 설명 | 승격 조건 |
+|------|------|----------|------|------------|
+| L0 | Raw Data | ✅ 완료 | 대화에서 정보 추출 (LLM Extractor) | 자동 |
+| L1 | Working Memory | ✅ 완료 | DuckDB 저장 + memory_stage 컬럼 | L0 완료 시 |
+| L2 | Candidate | ✅ 완료 | Idris2 타입 체크 통과 | `compile_status = 'success'` |
+| L3 | Verified | ✅ 완료 | 추가 검증 통과 | 반복 확인 / 사용자 승인 |
+| L4 | Certified | ✅ 완료 | 장기 안정 메모리 | 30일 유지 + 일관성 |
+
+### 완료된 작업
+
+#### 1. 플러그인 기반 (이전 완료)
+- `openclaw.plugin.json` - 플러그인 매니페스트
+- `package.json` - 의존성 정의
+- `index.ts` - 플러그인 진입점 (v2.0 리팩토링)
+- `.gitignore` - 빌드 파일 제외
+
+#### 2. Memory Pipeline (2026-02-01 완료)
+
+**핵심 파일:**
+- `memory-pipeline/types.ts` - MemorySchema 타입 정의 (MemoryStage 포함)
+- `memory-pipeline/indexer.ts` - DuckDB 인덱싱
+- `memory-pipeline/orchestrator.ts` - 파이프라인 오케스트레이터 + EventEmitter
+- `memory-pipeline/search.ts` - 키워드 검색 + memory_stage 필터
+- `memory-pipeline/tools.ts` - 에이전트 도구 (axiom_search, axiom_recall, axiom_save)
+
+**Graduation Pipeline:**
+- `memory-pipeline/graduation.ts` - 메모리 승격 로직
+- `memory-pipeline/conflict-resolver.ts` - 충돌 감지 및 해결
+- `memory-pipeline/similarity.ts` - 유사도 계산
+- `memory-pipeline/context-extractor.ts` - 컨텍스트 추출
+- `memory-pipeline/config.ts` - 설정 상수
+- `memory-pipeline/errors.ts` - 커스텀 에러 클래스
+
+#### 3. v2.0 Intent-based Memory System (2026-02-01 NEW)
+
+**새 파일:**
+
+| 파일 | 설명 |
+|------|------|
+| `memory-pipeline/intent-router.ts` | Intent 분류 + 스코어링 시스템 |
+| `memory-pipeline/memory-tiers.ts` | 3-Tier 메모리 아키텍처 타입 정의 |
+| `memory-pipeline/memory-graph.ts` | 그래프 기반 메모리 관리 (multi-hop) |
+| `memory-pipeline/semantic-cache.ts` | 시맨틱 유사도 기반 캐싱 |
+| `memory-pipeline/safety-filter.ts` | Anti-Creepy 필터 (안전성 검증) |
+| `memory-pipeline/message-handler.ts` | 통합 메시지 처리 플로우 |
+
+#### 4. v2.1 추가 기능 (2026-02-01 NEW)
+
+| 파일 | 설명 |
+|------|------|
+| `memory-pipeline/auto-scheduler.ts` | 자동 승격 스케줄러 (백그라운드 작업) |
+| `memory-pipeline/embeddings.ts` | Vector Embedding 모듈 (OpenAI/Cohere/Local) |
+| `web/features/memory/ConflictResolver.tsx` | 충돌 해결 UI 컴포넌트 |
+
+**AutoPromotionScheduler:**
+```typescript
+// 스케줄러 설정
+const scheduler = getAutoScheduler(pipeline, {
+  promotionCheckInterval: 60 * 60 * 1000, // 1시간
+  consolidationInterval: 6 * 60 * 60 * 1000, // 6시간
+  graphCleanupInterval: 24 * 60 * 60 * 1000, // 24시간
+  enabled: true,
+});
+
+// API 엔드포인트 (v2.1.1 테스트 완료 ✅)
+GET  /ax/api/scheduler/stats              // 스케줄러 통계
+POST /ax/api/scheduler/trigger-promotion  // 수동 승격 트리거
+POST /ax/api/scheduler/trigger-consolidation // 수동 통합 트리거
+POST /ax/api/scheduler/start              // 스케줄러 시작
+POST /ax/api/scheduler/stop               // 스케줄러 중지
+```
+
+**API 테스트 결과 (v2.1.1):**
+```bash
+# 스케줄러 통계 조회
+$ curl http://127.0.0.1:18789/ax/api/scheduler/stats
+{
+  "stats": {
+    "lastPromotionCheck": null,
+    "lastConsolidation": null,
+    "lastGraphCleanup": null,
+    "totalPromotions": 0,
+    "totalDemotions": 0,
+    "totalConsolidations": 0,
+    "isRunning": true
+  }
+}
+```
+
+**Vector Embedding (v2.3 EmbeddingGemma 통합):**
+```typescript
+// 임베딩 매니저 (OpenClaw EmbeddingGemma 308M 기본)
+const embeddingManager = new EmbeddingManager({
+  provider: "openclaw", // 다국어 지원 (한국어 포함 100+ 언어)
+  openclawConfig: api.config,
+});
+
+// 지원 프로바이더:
+// - "openclaw": EmbeddingGemma 308M (로컬, 다국어, 무료) ← 권장
+// - "openai": text-embedding-3-small (클라우드, 유료)
+// - "cohere": embed-multilingual-v3.0 (클라우드, 유료)
+// - "local": TF-IDF 폴백 (로컬, 무료, 품질 낮음)
+
+// 사용 예시
+const result = await embeddingManager.embed("커피를 좋아합니다");
+const similar = await embeddingManager.findSimilar(query, candidates, 0.7);
+const similarity = embeddingManager.cosineSimilarity(vec1, vec2);
+
+// API 엔드포인트 (v2.3 NEW)
+GET /ax/api/embeddings/info  // 임베딩 프로바이더 정보 및 캐시 통계
+```
+
+**EmbeddingGemma 특징:**
+- 308M 파라미터의 경량 모델
+- 100+ 언어 지원 (한국어, 중국어, 일본어 포함)
+- 로컬 실행 (node-llama-cpp 기반)
+- API 키 불필요 (무료)
+- OpenAI 자동 폴백 지원
+
+**Intent 종류 (8가지):**
+```typescript
+type MemoryIntent =
+  | "direct_recall"       // "기억나?", "지난번에 뭐라고 했지?"
+  | "preference_query"    // "추천해줘", "뭐 마실까?"
+  | "project_resume"      // "그거 이어서", "아까 설계안"
+  | "reference_resolve"   // "그거", "저번에 말한 방식"
+  | "temporal_query"      // "언제", "얼마나 오래 전에"
+  | "multi_hop_query"     // "A가 추천한 B의 C" (관계 추론)
+  | "contradiction_check" // "전에는 다르게 말했던 것 같은데"
+  | "no_memory_needed";   // 일반 질문
+```
+
+**스코어링 요소:**
+- explicitness: 명시적 메모리 요청 (0-3)
+- anaphora: 지시어 사용 (0-2)
+- preference: 선호도 질문 (0-2)
+- continuity: 연속성 표현 (0-2)
+- temporalSignal: 시간 관련 (0-2)
+- multiHopSignal: 관계 추론 (0-2)
+- contradictionSignal: 충돌 확인 (0-2)
+- sessionSufficiency: 세션 내 답 있으면 감점 (-3-0)
+
+**3-Tier 메모리 아키텍처:**
+```
+Tier 1: Core (In-Context) - 항상 접근 가능
+├── UserProfile (압축된 프로필)
+├── RecentFacts (최근 사실 5-10개)
+└── ActiveProjects (활성 프로젝트)
+
+Tier 2: Recall (Searchable) - 시맨틱 검색
+├── Episodic (세션별 에피소드)
+├── Semantic (추출된 사실)
+└── Relations (메모리 그래프)
+
+Tier 3: Archival (Long-term) - 필요시 복원
+├── ConsolidatedMemories (통합된 메모리)
+└── RawSessions (압축된 원본)
+```
+
+**Safety Filter (Anti-Creepy):**
+```typescript
+type MemoryUseAction = "use" | "confirm" | "soft_hint" | "skip";
+
+// 예시:
+// 'use': "커피 좋아하시니까 카페인 관련 조언 드릴게요."
+// 'soft_hint': "혹시 아직도 커피 좋아하시나요? 그렇다면..."
+// 'confirm': "예전에 커피 좋아한다고 하셨던 것 같은데, 지금도 그러세요?"
+// 'skip': (민감정보, 관련 없음 → 언급 안 함)
+```
+
+#### 4. API 레이어
+
+- `api/routes.ts` - REST API 라우터 (/ax/api/*)
+  - ✅ `GET /graduation/stats` - 승격 통계
+  - ✅ `POST /graduation/promote` - 수동 승격
+  - ✅ `GET /conflicts` - 충돌 목록
+  - ✅ `POST /conflicts/resolve` - 충돌 해결
+- `api/static.ts` - Next.js 정적 파일 서빙
+- `api/auth.ts` - 토큰 인증 (localhost 우회 포함)
+
+#### 5. Next.js 웹 UI
+
+**채팅 기능:**
+- ✅ `chat.send` 메서드 사용 (올바른 게이트웨이 프로토콜)
+- ✅ `chat` 이벤트 처리 (delta, final, aborted, error)
+- ✅ `agent` 이벤트 처리 (tool 진행 상황)
+- ✅ 스트리밍 응답 실시간 표시
+- ✅ 도구 호출 상태 표시 (running/done/error)
+- ✅ 마크다운 렌더링 (react-markdown + remark-gfm)
+
+**컴포넌트:**
+- `ThinkingModeToggle.tsx` - 생각 모드 토글
+- `ThinkingBlock.tsx` - 생각 과정 시각화
+- `FileAttachment.tsx` - 파일 첨부 (이미지, 문서)
+- `MemoryOperationIndicator.tsx` - 메모리 작업 진행 표시
+- `GraduationPipeline.tsx` - 메모리 레벨별 시각화
+
+#### 6. Idris 타입 정의
+
+- `idris/src/LongTermMemory/MemorySchema.idr` - 기본 메모리 스키마
+- `idris/src/LongTermMemory/GraduationSchema.idr` - Graduation 단계 정의
+
+### 수정된 주요 버그
+
+1. **Plugin API 이벤트 오류 (2026-02-01 v2.1.1 수정)**
+   - 문제: `api.on("shutdown")`, `api.on("session_start")` 사용 시 TypeScript 오류
+   - 원인: Plugin API는 `before_agent_start`, `session_end`, `agent_end`만 지원
+   - 해결:
+     - `shutdown` → `process.on("SIGTERM/SIGINT")` 사용
+     - `session_start` → `before_agent_start`에서 lazy-load 처리
+
+2. **설치된 플러그인 버전 불일치 (2026-02-01 v2.1.1 수정)**
+   - 문제: 게이트웨이가 `~/.openclaw/extensions/plugin-axiommind/dist`의 구버전 사용
+   - 해결: 빌드 후 `cp -r dist/* ~/.openclaw/extensions/plugin-axiommind/dist/` 필요
+   - 향후: deploy.sh 스크립트에 자동 복사 추가 예정
+
+3. **DuckDB SQL 호환성 문제 (2026-02-01 수정 완료 ✅)**
+   - 문제 1: `datetime('now', '-7 days')` SQLite 문법이 DuckDB에서 작동 안 함
+   - 해결 1: `current_timestamp - interval '7 days'` DuckDB 문법으로 변경
+   - 문제 2: `CURRENT_TIMESTAMP`가 컬럼명으로 인식됨
+   - 해결 2: `now()` DuckDB 함수로 변경
+   - 문제 3: `COUNT(*)`, `MAX()` 등이 BigInt 반환 → Node.js 크래시
+   - 해결 3: `CAST(COUNT(*) AS INTEGER)` 로 명시적 변환
+   - 수정 파일: `indexer.ts`, `graduation.ts`, `conflict-resolver.ts`, `similarity.ts`, `memory-graph.ts`, `auto-scheduler.ts`
+
+4. **DuckDB INSERT 충돌 (2026-02-01 수정)**
+   - 문제: `INSERT OR REPLACE` 사용 시 다중 UNIQUE 제약 조건에서 오류
+   - 해결: `ON CONFLICT (id) DO UPDATE SET ...` 문법으로 변경
+
+2. **SessionKey Mismatch (2026-02-01 해결)**
+   - 문제: Cron 작업이 `agent:main:cron:*` 세션 사용, UI는 `agent:main:main` 사용
+   - 해결: axiommind 전용 에이전트 설정 + URL에 `session=agent:axiommind:main` 파라미터
+
+3. **과도한 메모리 검색 (2026-02-01 v2.0 해결)**
+   - 문제: 매 메시지마다 무조건 axiom_search 호출
+   - 해결: Intent 기반 검색으로 필요시에만 호출
+
+## 아키텍처 (v2.0)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Message Flow                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  User Message                                                    │
+│       ↓                                                          │
+│  ┌─────────────────┐                                            │
+│  │  Intent Router  │ ← classifyIntent() + calculateMemoryScore()│
+│  └────────┬────────┘                                            │
+│           ↓                                                      │
+│  ┌─────────────────┐                                            │
+│  │ Action Decision │ → skip / cache_check / search / graph      │
+│  └────────┬────────┘                                            │
+│           ↓                                                      │
+│  ┌─────────────────┐    ┌─────────────────┐                     │
+│  │ Semantic Cache  │ ←→ │  Memory Graph   │                     │
+│  └────────┬────────┘    └─────────────────┘                     │
+│           ↓                                                      │
+│  ┌─────────────────┐                                            │
+│  │  Safety Filter  │ → use / confirm / soft_hint / skip         │
+│  └────────┬────────┘                                            │
+│           ↓                                                      │
+│  ┌─────────────────┐                                            │
+│  │ Light Context   │ → 경량 컨텍스트 생성 (~300 tokens)          │
+│  └─────────────────┘                                            │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────┐
+│                      Session Lifecycle                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Session Start                                                   │
+│       ↓                                                          │
+│  ┌─────────────────┐                                            │
+│  │ Preload Meta    │ ← 메타데이터만 로드 (본문 X)                 │
+│  └─────────────────┘                                            │
+│       ↓                                                          │
+│  [... 대화 진행 ...]                                             │
+│       ↓                                                          │
+│  Session End                                                     │
+│       ↓                                                          │
+│  ┌─────────────────┐                                            │
+│  │ Auto Extract    │ → processSessionFromContext()              │
+│  └─────────────────┘                                            │
+│       ↓                                                          │
+│  ┌─────────────────┐                                            │
+│  │ Graduation      │ → L1 → L2 (Idris 검증 시)                   │
+│  │ Pipeline        │                                            │
+│  └─────────────────┘                                            │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 게이트웨이 프로토콜 정리
+
+### 메시지 전송
+```typescript
+// chat.send 요청
+{
+  type: "req",
+  id: "req-1",
+  method: "chat.send",
+  params: {
+    sessionKey: "agent:axiommind:main",
+    message: "안녕하세요",
+    idempotencyKey: "uuid-...",
+    deliver: false
+  }
+}
+```
+
+### 이벤트 수신
+```typescript
+// chat 이벤트 (스트리밍)
+{
+  type: "event",
+  event: "chat",
+  payload: {
+    runId: "uuid-...",
+    sessionKey: "agent:axiommind:main",
+    state: "delta" | "final" | "aborted" | "error",
+    message: { role: "assistant", content: [...], timestamp: ... },
+    errorMessage?: "..."
+  }
+}
+
+// agent 이벤트 (도구 진행)
+{
+  type: "event",
+  event: "agent",
+  payload: {
+    runId: "uuid-...",
+    stream: "tool" | "assistant" | "lifecycle",
+    sessionKey: "agent:axiommind:main",
+    data: { name: "axiom_save", input: {...}, output: {...} }
+  }
+}
+```
+
+## 설치 및 실행
+
+### 빠른 설치
+
+```bash
+# 1. 의존성 설치
+cd extensions/axiommind && npm install
+cd web && npm install
+
+# 2. 웹 UI 빌드
+npm run build
+
+# 3. 설치된 플러그인에 dist 복사 (중요!)
+cp -r dist/* ~/.openclaw/extensions/plugin-axiommind/dist/
+
+# 4. 배포
+./deploy.sh
+
+# 5. 게이트웨이 재시작
+pkill -9 -f openclaw-gateway
+openclaw gateway run --bind loopback --port 18789 --force
+```
+
+> **주의**: 빌드 후 반드시 `~/.openclaw/extensions/plugin-axiommind/dist/`에 복사해야 함.
+> 게이트웨이는 설치된 플러그인 경로를 우선 로드하므로 소스 dist만 빌드하면 반영 안 됨.
+
+### 접속 URL
+
+```
+http://localhost:18789/ax?token=YOUR_TOKEN&session=agent:axiommind:main
+```
+
+**중요**: `session=agent:axiommind:main` 파라미터 필수 (Cron 세션과 분리)
+
+### 전용 에이전트 설정
+
+`~/.openclaw/openclaw.json`:
+```json
+{
+  "agents": {
+    "list": [
+      {
+        "id": "axiommind",
+        "name": "AxiomMind Memory Agent",
+        "model": { "primary": "openai-codex/gpt-5.2" }
+      }
+    ]
+  }
+}
+```
+
+## 남은 작업
+
+### 🔴 우선순위 높음 (다음 스프린트)
+
+| 작업 | 설명 | 상태 |
+|------|------|------|
+| 메모리 편집 UI | 개별 메모리 수정/삭제 인터페이스 | ✅ 완료 (v2.2) |
+| 메모리 삭제/강등 UI | L3→L2 강등, 삭제 확인 모달 | ✅ 완료 (v2.2) |
+| 실제 Embedding 연동 | EmbeddingGemma 308M 통합 | ✅ 완료 (v2.3) |
+
+### 🟡 우선순위 중간 (v2.2 계획)
+
+| 작업 | 설명 | 상태 |
+|------|------|------|
+| Intent 기반 메모리 검색 | 필요시에만 검색 | ✅ 완료 (v2.0) |
+| Semantic Cache | 중복 검색 방지 | ✅ 완료 (v2.0) |
+| Anti-Creepy Filter | 민감 정보 필터링 | ✅ 완료 (v2.0) |
+| 내보내기/가져오기 | JSON/Markdown 포맷 | 📋 대기 |
+| 그래프 시각화 UI | D3.js 기반 메모리 그래프 | 📋 대기 |
+
+### 🟢 우선순위 낮음 (Backlog)
+
+| 작업 | 설명 | 상태 |
+|------|------|------|
+| Idris2 컴파일러 자동 설치 | brew/apt 스크립트 | 📋 대기 |
+| 메모리 시각화 그래프 | 백엔드 완료 | ✅ 완료 (v2.0) |
+| 그래프 시맨틱 검색 | Embedding 통합 | ✅ 완료 (v2.1) |
+| 통계 대시보드 | 메모리 사용량, 승격률 | ✅ 완료 (v2.4) |
+| 메모리 검색 하이라이팅 | 키워드 강조 | 📋 대기 |
+| DuckDB SQL 호환성 수정 | datetime, BigInt | ✅ 완료 (v2.1.1) |
+
+### ✅ 완료된 작업 (v2.4)
+
+- [x] **Memory Dashboard UI**
+  - 새 페이지: `/ax/dashboard` - 메모리 분석 대시보드
+  - 통계 카드: 총 메모리, 단계별 분포 (L1~L4)
+  - Top Accessed: 가장 많이 참조된 메모리 목록
+  - Recent Activity: 최근 승격/강등 이력
+  - Embedding Info: 프로바이더 정보 및 캐시 히트율
+  - Scheduler Status: 자동 스케줄러 상태
+- [x] **Dashboard API 엔드포인트**
+  - `GET /ax/api/dashboard/stats` - 전체 통계
+  - `GET /ax/api/dashboard/top-accessed` - 접근 빈도 상위 메모리
+  - `GET /ax/api/dashboard/activity` - 최근 활동 이력
+- [x] **세션별 도구 안내 최적화**
+  - 매 메시지마다 → 세션 첫 메시지에만 도구 안내 표시
+  - 토큰 절약 및 대화창 깔끔해짐
+
+### ✅ 완료된 작업 (v2.3.1)
+
+- [x] **OpenClaw 코어 메모리 검색 로컬 임베딩 설정**
+  - `agents.defaults.memorySearch.provider = "local"` 설정
+  - `memory_search` 도구가 EmbeddingGemma 308M 사용
+  - API 키 없이 다국어 벡터 검색 가능
+  - 테스트 결과: 한국어 쿼리 "관심사", "생일" → score 0.39~0.42 반환
+
+### ✅ 완료된 작업 (v2.3.0)
+
+- [x] **EmbeddingGemma 308M 통합**
+  - OpenClaw의 기존 임베딩 시스템 활용
+  - `"openclaw"` 프로바이더 추가 (다국어 지원 권장)
+  - 100+ 언어 지원 (한국어, 중국어, 일본어 등)
+  - 로컬 실행 (API 키 불필요)
+  - OpenAI 자동 폴백
+- [x] **임베딩 API 엔드포인트**
+  - `GET /ax/api/embeddings/info` - 프로바이더 정보 및 캐시 통계
+- [x] **plugin-sdk 확장**
+  - `createEmbeddingProvider` 함수 export
+  - 타입 export: `EmbeddingProvider`, `EmbeddingProviderResult`, `EmbeddingProviderOptions`
+
+### ✅ 완료된 작업 (v2.2)
+
+- [x] **메모리 편집 UI** (`MemoryEditor.tsx`)
+  - 메모리 상세 보기/편집 모달
+  - 제목 및 컨텐츠 JSON 수정
+  - 승격/강등 버튼
+  - 삭제 확인 모달
+  - 메타데이터 표시 (접근 횟수, 확인 횟수, 생성일 등)
+- [x] **Entry CRUD API**
+  - `GET /ax/api/entries` - 엔트리 목록 (페이징, 필터링)
+  - `GET /ax/api/entries/:id` - 개별 엔트리 조회
+  - `PUT /ax/api/entries/:id` - 엔트리 수정
+  - `DELETE /ax/api/entries/:id` - 엔트리 삭제
+- [x] **검색 결과 UI 개선**
+  - 메모리 레벨 배지 표시 (L1~L4)
+  - 클릭 시 편집 모달 열기
+
+### ✅ 완료된 작업 (v2.1.1)
+
+- [x] 자동 승격 스케줄러 (`auto-scheduler.ts`)
+- [x] 충돌 해결 UI (`ConflictResolver.tsx`)
+- [x] Vector Embedding 모듈 (`embeddings.ts`)
+- [x] Memory Graph 모듈 (`memory-graph.ts`)
+- [x] Semantic Cache 모듈 (`semantic-cache.ts`)
+- [x] DuckDB SQL 호환성 수정
+  - `datetime()` → `current_timestamp - interval 'X days'`
+  - `CURRENT_TIMESTAMP` → `now()`
+  - `COUNT(*)` / `MAX()` BigInt → `CAST(... AS INTEGER)`
+- [x] Plugin API 이벤트 핸들러 수정
+  - `shutdown` → `process.on("SIGTERM/SIGINT")`
+  - `session_start` → `before_agent_start` lazy-load
+
+## 데이터 저장 위치
+
+```
+~/.openclaw/axiommind/
+├── data/
+│   └── memory.duckdb          # 메모리 데이터베이스
+│       ├── sessions           # 세션 테이블
+│       ├── entries            # 엔트리 테이블
+│       ├── memory_nodes       # 그래프 노드 (v2.0)
+│       ├── memory_edges       # 그래프 엣지 (v2.0)
+│       ├── promotion_history  # 승격 이력
+│       └── conflicts          # 충돌 기록
+└── sessions/
+    └── YYYY-MM-DD_NN.idr      # Idris 세션 파일
+
+~/.openclaw/workspace/
+└── MEMORY.md                  # 워크스페이스 메모리 파일
+```
+
+## 참고 문서
+
+- `README.md` - 설치 및 사용 가이드
+- `TROUBLESHOOTING.md` - 문제 해결 가이드
+- `specs/axiommind/spec.md` - 기능 명세서
+- `specs/axiommind/plan.md` - 구현 계획
+- `specs/axiommind/context.md` - 컨텍스트 문서
+
+## 참고 연구
+
+v2.0 설계에 참고한 연구/프로젝트:
+- [MemGPT](https://arxiv.org/abs/2310.08560) - 2-Tier 메모리 아키텍처
+- [Mem0](https://arxiv.org/abs/2504.19413) - 그래프 기반 메모리
+- [Supermemory](https://supermemory.ai/research) - Temporal + Relational 메모리
+- [Semantic Caching](https://redis.io/blog/what-is-semantic-caching/) - 비용 최적화
+
+## 주의사항
+
+1. **브라우저 캐시**: 변경사항 테스트 시 강제 새로고침 (Cmd+Shift+R) 필요
+2. **세션 분리**: `session=agent:axiommind:main` 파라미터 사용 권장
+3. **게이트웨이 재시작**: 플러그인 변경 후 반드시 재시작 필요
+4. **localhost 사용**: `127.0.0.1` 대신 `localhost` 사용 권장 (secure context)
+
+## 성능 예상 (v2.1)
+
+| 시나리오 | v1 | v2.0 | v2.1 | 개선율 |
+|---------|-----|------|------|--------|
+| 일반 대화 (메모리 불필요) | ~2초 | ~0.5초 | ~0.5초 | 75% ↓ |
+| 캐시 히트 (Jaccard) | N/A | ~100ms | ~80ms | - |
+| 캐시 히트 (Vector) | N/A | N/A | ~50ms | 50% ↓ |
+| 메모리 검색 필요 | ~3초 | ~1.5초 | ~1.2초 | 60% ↓ |
+| 시맨틱 검색 (Vector) | N/A | N/A | ~300ms | NEW |
+| 토큰 사용량 (평균) | 1.5K/msg | 0.3K/msg | 0.3K/msg | 80% ↓ |
+
+### v2.3 새 기능 (EmbeddingGemma)
+
+| 기능 | 설명 | 성능 |
+|------|------|------|
+| EmbeddingGemma 308M | 다국어 로컬 임베딩 | ~50ms (캐시 히트) |
+| OpenClaw 통합 | 기존 임베딩 시스템 활용 | 자동 폴백 지원 |
+| 임베딩 API | 프로바이더 정보 조회 | GET /ax/api/embeddings/info |
+
+**EmbeddingGemma vs OpenAI 비교:**
+| 항목 | EmbeddingGemma | OpenAI |
+|------|---------------|--------|
+| 실행 위치 | 로컬 | 클라우드 |
+| 비용 | 무료 | 유료 |
+| 다국어 지원 | 100+ 언어 | 제한적 |
+| 응답 속도 | ~50ms | ~200ms |
+| 벡터 차원 | 768 | 1536 |
+
+### v2.1 새 기능
+
+| 기능 | 설명 | 성능 |
+|------|------|------|
+| AutoPromotionScheduler | 백그라운드 승격/통합 | 1시간/6시간/24시간 주기 |
+| Vector Embeddings | OpenAI/Cohere/Local 지원 | ~100ms (캐시 히트) |
+| Semantic Graph Search | 그래프 노드 시맨틱 검색 | ~200ms (100 노드) |
+| Conflict Resolver UI | 충돌 해결 인터페이스 | - |
+
+---
+
+## 개발 히스토리
+
+| 버전 | 날짜 | 주요 변경 |
+|------|------|----------|
+| v2.4.0 | 2026-02-01 | Memory Dashboard UI, 세션별 도구 안내 최적화 |
+| v2.3.1 | 2026-02-01 | OpenClaw 코어 memory_search 로컬 임베딩 설정 완료 |
+| v2.3.0 | 2026-02-01 | OpenClaw EmbeddingGemma 308M 통합 (다국어 임베딩) |
+| v2.2.0 | 2026-02-01 | Memory Editor UI, Entry CRUD API, 검색 결과 레벨 표시 |
+| v2.1.1 | 2026-02-01 | DuckDB SQL 호환성 수정, Plugin API 이벤트 수정 |
+| v2.1.0 | 2026-02-01 | AutoScheduler, Embeddings, ConflictResolver UI |
+| v2.0.0 | 2026-02-01 | Intent-based Memory, 3-Tier Architecture |
+| v1.0.0 | 2026-01-30 | 초기 버전 - Memory Graduation Pipeline |
+
+---
+
+*Last updated: 2026-02-01 (v2.4 - Memory Dashboard + Session Optimization)*
